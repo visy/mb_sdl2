@@ -17,7 +17,6 @@ void context_init(ApplicationContext* ctx, const char* game_dir) {
     strncpy(ctx->game_dir, game_dir, MAX_PATH - 1);
     ctx->game_dir[MAX_PATH - 1] = '\0';
 
-    printf("Initializing SDL...\n"); fflush(stdout);
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
         report_sdl_error("Failed to initialize SDL");
     }
@@ -29,7 +28,6 @@ void context_init(ApplicationContext* ctx, const char* game_dir) {
     s3m_initialize(ctx->music, 44100);
     ctx->music_loaded = false;
 
-    printf("Creating window...\n"); fflush(stdout);
     ctx->window = SDL_CreateWindow(
         "MineBombers Reloaded",
         SDL_WINDOWPOS_CENTERED,
@@ -38,32 +36,17 @@ void context_init(ApplicationContext* ctx, const char* game_dir) {
         SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_SHOWN
     );
 
-    if (!ctx->window) {
-        report_sdl_error("Failed to create window");
-    }
+    if (!ctx->window) report_sdl_error("Failed to create window");
 
     ctx->renderer = SDL_CreateRenderer(ctx->window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
-    if (!ctx->renderer) {
-        report_sdl_error("Failed to create renderer");
-    }
+    if (!ctx->renderer) report_sdl_error("Failed to create renderer");
 
-    ctx->buffer = SDL_CreateTexture(
-        ctx->renderer,
-        SDL_PIXELFORMAT_RGBA8888,
-        SDL_TEXTUREACCESS_TARGET,
-        640, 480
-    );
+    ctx->buffer = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, 640, 480);
 
-    printf("Opening audio device...\n"); fflush(stdout);
     if (Mix_OpenAudio(44100, AUDIO_S16LSB, 2, 2048) < 0) {
         report_sdl_error("Failed to open audio");
     }
-    
-    int freq; uint16_t format; int channels;
-    if (Mix_QuerySpec(&freq, &format, &channels)) {
-        printf("Audio spec: %dHz, fmt %04x, %d chn\n", freq, format, channels);
-    }
-    fflush(stdout);
+    Mix_AllocateChannels(32);
 }
 
 void context_destroy(ApplicationContext* ctx) {
@@ -93,7 +76,6 @@ bool context_play_music(ApplicationContext* ctx, const char* filename) {
 
     char path[MAX_PATH];
     build_path(ctx->game_dir, filename, path, sizeof(path));
-    printf("Loading music: %s\n", filename); fflush(stdout);
 
     if (s3m_load(ctx->music, path) == 0) {
         if (ctx->music->header->mastervol == 0) ctx->music->header->mastervol = 64;
@@ -113,6 +95,70 @@ void context_stop_music(ApplicationContext* ctx) {
         s3m_unload(ctx->music);
         ctx->music_loaded = false;
     }
+}
+
+Mix_Chunk* context_load_sample(ApplicationContext* ctx, const char* filename) {
+    char path[MAX_PATH];
+    build_path(ctx->game_dir, filename, path, sizeof(path));
+    
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+
+    fseek(f, 0, SEEK_END);
+    uint32_t pcm_len = (uint32_t)ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (pcm_len == 0) {
+        fclose(f);
+        return NULL;
+    }
+
+    // Create a WAV header in memory to wrap the raw 8-bit mono 11025Hz data
+    uint32_t total_len = 44 + pcm_len;
+    uint8_t* wav_buf = malloc(total_len);
+    if (!wav_buf) {
+        fclose(f);
+        return NULL;
+    }
+
+    uint32_t freq = 11025;
+    uint16_t channels = 1;
+    uint16_t bits = 8;
+    uint32_t byte_rate = freq * channels * bits / 8;
+    uint16_t block_align = channels * bits / 8;
+
+    memcpy(wav_buf + 0, "RIFF", 4);
+    uint32_t chunk_size = total_len - 8;
+    memcpy(wav_buf + 4, &chunk_size, 4);
+    memcpy(wav_buf + 8, "WAVE", 4);
+    memcpy(wav_buf + 12, "fmt ", 4);
+    uint32_t fmt_size = 16;
+    memcpy(wav_buf + 16, &fmt_size, 4);
+    uint16_t format_tag = 1; // PCM
+    memcpy(wav_buf + 20, &format_tag, 2);
+    memcpy(wav_buf + 22, &channels, 2);
+    memcpy(wav_buf + 24, &freq, 4);
+    memcpy(wav_buf + 28, &byte_rate, 4);
+    memcpy(wav_buf + 32, &block_align, 2);
+    memcpy(wav_buf + 34, &bits, 2);
+    memcpy(wav_buf + 36, "data", 4);
+    memcpy(wav_buf + 40, &pcm_len, 4);
+
+    fread(wav_buf + 44, 1, pcm_len, f);
+    fclose(f);
+
+    // Let SDL_mixer load it and manage the memory
+    SDL_RWops* rw = SDL_RWFromMem(wav_buf, total_len);
+    Mix_Chunk* chunk = Mix_LoadWAV_RW(rw, 1); // 1 = auto-close RW
+    
+    // We can free our temporary wav_buf because Mix_LoadWAV_RW copies the data
+    free(wav_buf);
+
+    return chunk;
+}
+
+void context_play_sample(Mix_Chunk* sample) {
+    if (sample) Mix_PlayChannel(-1, sample, 0);
 }
 
 void context_wait_frame(ApplicationContext* ctx) {

@@ -1,6 +1,15 @@
 #include "app.h"
 #include <stdio.h>
 #include <string.h>
+#include <dirent.h>
+#include <ctype.h>
+
+#ifdef _WIN32
+#define STRICMP _stricmp
+#else
+#include <strings.h>
+#define STRICMP strcasecmp
+#endif
 
 typedef enum {
     MENU_NEW_GAME,
@@ -71,6 +80,29 @@ bool app_init(App* app, ApplicationContext* ctx) {
 
     load_registered(ctx->game_dir, app->registered, sizeof(app->registered));
 
+    // Load all .VOC files
+    DIR* d = opendir(ctx->game_dir);
+    if (d) {
+        struct dirent* dir;
+        while ((dir = readdir(d)) != NULL) {
+            char* ext = strrchr(dir->d_name, '.');
+            if (ext && STRICMP(ext, ".VOC") == 0) {
+                if (app->sound_count < 64) {
+                    app->sounds[app->sound_count] = context_load_sample(ctx, dir->d_name);
+                    if (app->sounds[app->sound_count]) {
+                        strncpy(app->sound_names[app->sound_count], dir->d_name, 31);
+                        app->sound_names[app->sound_count][31] = '\0';
+                        app->sound_count++;
+                    } else {
+                        printf("Failed to load %s: %s\n", dir->d_name, Mix_GetError());
+                    }
+                }
+            }
+        }
+        closedir(d);
+    }
+    printf("Successfully discovered %d VOC files in %s\n", app->sound_count, ctx->game_dir); fflush(stdout);
+
     return true;
 }
 
@@ -83,6 +115,12 @@ void app_destroy(App* app) {
     }
     destroy_texture_palette(&app->codes);
     destroy_font(&app->font);
+
+    for (int i = 0; i < app->sound_count; ++i) {
+        if (app->sounds[i]) {
+            Mix_FreeChunk(app->sounds[i]);
+        }
+    }
 }
 
 static void render_main_menu(App* app, ApplicationContext* ctx, SelectedMenu selected) {
@@ -124,22 +162,81 @@ static void update_shovel(App* app, ApplicationContext* ctx, SelectedMenu previo
     context_present(ctx);
 }
 
+static void app_run_sound_test(App* app, ApplicationContext* ctx) {
+    if (app->sound_count == 0) {
+        printf("Error: No VOC files were loaded. Sound test unavailable.\n"); fflush(stdout);
+        return;
+    }
+
+    int selected = 0;
+    bool running = true;
+
+    while (running) {
+        SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+        SDL_RenderClear(ctx->renderer);
+
+        SDL_Color white = {255, 255, 255, 255};
+        SDL_Color yellow = {255, 255, 0, 255};
+
+        render_text(ctx->renderer, &app->font, 240, 20, white, "SOUND TEST");
+        render_text(ctx->renderer, &app->font, 20, 450, white, "UP/DOWN: BROWSE  ENTER: PLAY  ESC: BACK");
+
+        int start_idx = selected - 10;
+        if (start_idx < 0) start_idx = 0;
+        
+        for (int i = 0; i < 20 && (start_idx + i) < app->sound_count; ++i) {
+            int idx = start_idx + i;
+            render_text(ctx->renderer, &app->font, 50, 60 + i * 18, 
+                        (idx == selected) ? yellow : white, 
+                        app->sound_names[idx]);
+            
+            if (idx == selected) {
+                render_text(ctx->renderer, &app->font, 30, 60 + i * 18, yellow, ">");
+            }
+        }
+
+        SDL_SetRenderTarget(ctx->renderer, NULL);
+        context_present(ctx);
+
+        SDL_Scancode key = context_wait_key_pressed(ctx);
+        switch (key) {
+            case SDL_SCANCODE_UP:
+                selected = (selected + app->sound_count - 1) % app->sound_count;
+                break;
+            case SDL_SCANCODE_DOWN:
+                selected = (selected + 1) % app->sound_count;
+                break;
+            case SDL_SCANCODE_RETURN:
+            case SDL_SCANCODE_KP_ENTER:
+                context_play_sample(app->sounds[selected]);
+                break;
+            case SDL_SCANCODE_ESCAPE:
+                running = false;
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 static void app_run_info_menu(App* app, ApplicationContext* ctx) {
-    SDL_Scancode key = SDL_SCANCODE_ESCAPE;
     for (int i = 0; i < 4; ++i) {
         context_render_texture(ctx, app->info[i].texture);
         context_animate(ctx, ANIMATION_FADE_UP, 7);
-        key = context_wait_key_pressed(ctx);
+        
+        SDL_Scancode key = context_wait_key_pressed(ctx);
+        
+        if (key == SDL_SCANCODE_LEFT) {
+            context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+            app_run_sound_test(app, ctx);
+            return;
+        }
+
         context_animate(ctx, ANIMATION_FADE_DOWN, 7);
         if (key == SDL_SCANCODE_ESCAPE) {
-            break;
+            return;
         }
-    }
-    if (key == SDL_SCANCODE_TAB) {
-        context_render_texture(ctx, app->codes.texture);
-        context_animate(ctx, ANIMATION_FADE_UP, 7);
-        context_wait_key_pressed(ctx);
-        context_animate(ctx, ANIMATION_FADE_DOWN, 7);
     }
 }
 
@@ -162,9 +259,17 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
         context_animate(ctx, ANIMATION_FADE_UP, 7);
 
         bool navigating = true;
+        bool entering_sound_test = false;
+
         while (navigating) {
             SDL_Scancode sc = context_wait_key_pressed(ctx);
             switch (sc) {
+                case SDL_SCANCODE_LEFT:
+                    if (selected == MENU_INFO) {
+                        entering_sound_test = true;
+                        navigating = false;
+                    }
+                    break;
                 case SDL_SCANCODE_DOWN:
                 case SDL_SCANCODE_KP_2:
                 {
@@ -196,16 +301,21 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
             }
         }
 
-        context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+        if (entering_sound_test) {
+            context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+            app_run_sound_test(app, ctx);
+            continue; // Go back to main menu loop
+        }
 
         if (selected == MENU_QUIT) {
+            context_animate(ctx, ANIMATION_FADE_DOWN, 7);
             break;
         } else if (selected == MENU_NEW_GAME) {
             printf("New game selected!\n");
-            // Will loop back to menu until actual game logic is implemented
+            context_animate(ctx, ANIMATION_FADE_DOWN, 7);
         } else if (selected == MENU_OPTIONS) {
             printf("Options selected!\n");
-            // Will loop back
+            context_animate(ctx, ANIMATION_FADE_DOWN, 7);
         } else if (selected == MENU_INFO) {
             app_run_info_menu(app, ctx);
         }

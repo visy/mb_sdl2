@@ -44,4 +44,8 @@ SDL_Scancode context_wait_key_pressed(ApplicationContext* ctx);
 bool context_play_music(ApplicationContext* ctx, const char* filename);
 void context_stop_music(ApplicationContext* ctx);
 
+// Sound Effects
+Mix_Chunk* context_load_sample(ApplicationContext* ctx, const char* filename);
+void context_play_sample(Mix_Chunk* sample);
+
 #endif // CONTEXT_H

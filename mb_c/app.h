@@ -16,6 +16,10 @@ typedef struct {
     Glyphs glyphs;
     Font font;
     char registered[256];
+
+    Mix_Chunk* sounds[64];
+    char sound_names[64][32];
+    int sound_count;
 } App;
 
 bool app_init(App* app, ApplicationContext* ctx);
