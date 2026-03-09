@@ -1,0 +1,3 @@
+[submodule "s3mplay"]
+	path = s3mplay
+	url = https://github.com/irqmask/s3mplay

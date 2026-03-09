@@ -1,0 +1,237 @@
+		       ษออออออออออออออออออออออออป
+		       บ    Mine Bombers 3.11   บ
+		       บ   REGISTERED FREEWARE  บ
+		       บฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤฤบ
+		       บ   Skitso Productions   บ
+		       ศออออออออออออออออออออออออผ
+
+
+    Directory:
+    1.............. General instructions
+      1.1............ Hardware requirements
+    2.............. Game menus
+      2.1............. The main menu
+      2.2............. The options menu
+      2.3............. The info screen
+    3.............. Controls
+      3.1............. Keys
+    4.............. Playing the game
+      4.1............. Shopping for bombs
+      4.2............. The game
+    5.............. Hints
+    6.............. The map editor (MINEDIT)
+
+      
+1. General instructions
+
+     MINE BOMBERS is a fun, fast paced, entertaining and
+     addictive arcade style game where YOU get to blow up, kill
+     and tear apart your best friend. At the same time you can also
+     find and collect rare and valuable treasures from ancient mines
+     deep underground. This is the REGISTERED version of MB. So it's
+     against the law to copy or distribute it. THANKS FOR SUPPORTING.
+
+     We are not responisble for any damage or problems this product may
+     cause, so use at your own risk. 
+
+  1.1 Hardware requirements
+
+     Unfortunately Mine Bombers will not work on old and slow
+     computers. The minimum requirement is a 386 processor.
+     The game also features digital sound. You'll need a
+     SB1/SB2/SBpro/SB16/GUS-compatible soundcard. A keyboard, a monitor and
+     1-4 players are also recommended. GUS users must have the ULTRASND
+     enviroment variable properly set.
+
+2. Game menus
+
+  2.1 The main menu
+
+     After loading the game, and after admireing the beautiful startup
+     picture you will get to the MAIN MENU. You can move up, or down by using
+     the ARROW KEYS. Activate the selected icon by pressing ENTER.
+
+     Tip: To quit the game, just push F10 (several times if necessary).
+
+  2.2 The options menu
+
+     In the options menu you can change some of the game settings. Do this
+     by selecting the appropriate setting and adjusting it with the ARROW KEYS.
+
+       Treasures      = The amount of treasures appearing on a random level.
+       Rounds         = The amount of rounds to be played.
+       Time           = The amount of time in a multiplayer game.
+       Starting Cash  = The amount of cash in multiplayer game.
+       Redefine Keys  = Key selections.
+			(ESC to jump to the next one, F10 to quit).
+       Players        = The amount of players. If you select one player
+			you automatically jump into oneplayer mode.
+       Speed          = How fast the game runs. The smaller the slower.
+       Damage         = How much the bombs cause damage to players.
+       Darkness       = Darkness on/of
+       Selling        = Weapon selling on/off
+       Free market    = changing prices
+       Winner         = Winner by money or by seperate wins
+       Load Levels    = Here you can load ready-made levels, or levels
+			created with MINEDIT
+       Mainmenu       = Return to the main menu. All settings will
+			Automatically be saved.
+
+  2.3 The info screen
+
+     From the info screen you'll get the lates information on new
+     weapons and technologies. Information on the makers (us).
+     To quit type F10.
+
+
+3. Controls
+
+  3.1 Keys
+
+     In the "Redefine Keys" of the Options menu you can change all the
+     keys for multi- or singleplayer mode. You can also control a player
+     with a joystick if you have one. When a key is asked just move the
+     joystick to asked direction. If you want to define that a player
+     also stops when using a joystick press F1 when STOP-button is asked
+     (F2 for joystick 2) Before you can use a joystick you MUST calibrate
+     it. Use the CALIBRA.EXE in the game directory to do it.
+
+     If you have problems with joystick (e.g. the game detects a joystick
+     even if you don't have one) you can disable it by giving "-nojoy" as
+     a command line parameter to MB.EXE (MB.EXE -nojoy).
+
+     During the game you don't have to hold down the keys so
+     you shouldn't have any problems in multiplayer mode.
+     (Some keyboards experience 'key lockout' if many keys are
+     pushed down at once.)
+
+4. Playing the game
+
+4.1 Shopping
+
+     The game begins in the weapons shop. Here players can get their
+     favourite weapons and bombs. If there are more than two players
+     the selection will be displayed twice. The cursor can be moved by
+     with keys selected for individual players. Use the "drop bomb" key to
+     purchase your selection and "select" key to sell it. To begin the game
+     select the "LEAVE"-icon, or press the ESC key.
+
+     By buying rockpicks/powerdrills you can increase your power permanently.
+     Rockpicks/powerdrills found on a level boost your power for that level
+     only.
+
+4.2 The game
+
+  - Multiplayer mode
+     The game begins after the players leave the shop. The players
+     find themselves at the far corners of the screen. You should move
+     your guy around and collect as many treasures as you can in the
+     limited time available. You might also try to kill the other players.
+     If you are able to slaughter your opponent (before he/she slaughters you)
+     you will recieve a large amount of cash. The level will end if one of
+     the following options are filled:
+
+	     1. The time runs out.
+	     2. All the treasures are collected.
+	     3. Less than two players survive.
+
+     After completing a level you are automatically transported to
+     the shop to purchase more bombs.
+
+     Information on the players is displayed next to the top edge of
+     the screen. The large screen shows the currently selected bomb.
+     Digging power and your current cash are displayed under your name.
+     A bar graph displays the players health.
+
+     When all the rounds have been played, the winner is the player with
+     the most cash or the most wins in the seperate levels.
+
+  - Singleplayer mode
+
+     In singleplayer mode you have to complete 15 monster-filled levels.
+     In oneplayer mode you have three lives. Each level begins from the upper
+     lefthand corner. Your mission is simply to find the door that leads to
+     the next level. The door is a black square with grey borders. Notice that
+     the location of the exit may varie from game to game. Players who excell
+     get their names on the revered Hall-of-fame list. Your position on the
+     list is defined by how far you get in the game.
+
+5. Hints
+
+     Here are some simple but useful hints:
+
+       1.  Collect the most valuable treasures first.
+       2.  Try to get as much digging power as possible.
+       3.  Don't waste all your money. The player with the most
+	   money at the end wins.
+       4.  Remember that even the smallest bombs are sometimes
+	   invaluable.
+       5.  Be carefull not to blow up your treasures.
+       6.  Always try to find the quickest route through rock.
+	   Edges crumble easyer than normal rock.
+       7.  If your opponent has collected much more treasure than you...
+	   Go kamikaze.
+       8.  Try to get your get your opponent to follow you. When he's
+	   right behind you, drop a MINE!
+       9.  First trap your opponent in urethane. Then drop a barrel of napalm
+	   next to him. The urethane won't stop the napalm from advancing,
+	   giving your opponent a nice tan!
+       10. Try to surround your opponent with remote bombs or mines.
+       11. Its better to buy a rockdrill than two large rockpicks.
+       12. If your opponent is just digging up a treasure you can't get to,
+	   blow it up!
+       13. While escaping from napalm try to run into a large room, or
+	   try to make the corridor larger. You can also try to block the
+	   corridor with rocks or steel plating. (Steel plates can be
+	   purchased from the shop.)
+
+6. The mapeditor (MINEDIT)
+
+     With MINEDITyou can edit old levels and create new ones.
+
+     How MINEDIT works:
+
+       You must have a mouse to use MINEDIT. Of course if your playing
+       this game, you propably have one already.
+
+       On the info bar you can see a list of objects, this is a kind
+       of "palette" where you can select the object of your choice.
+       You can select individual colors for both mouse buttons.
+
+       You can also select diffirent brush types from other buttons
+       situated on the info bar. The first button selects a normal brush
+       for detail work. You can adjust the size of this brush from
+       the adjuster located in the upper righthand corner.
+       The next button selects a square brush. The thrid button
+       represents a can of paint. Selecting this activates the "fill"
+       option.
+
+       Special functions:
+			F2 = Mirrors the left side of the level to the right.
+			F3 = Places one random treasure on to the level.
+			F7 = Smaller brush.
+			F8 = Larger brush.
+			F9 = Clears the screen.
+			 Z = Places one random treasure under the cursor.
+
+       Warning! Obs! Huom! Achtung! Do not place too many monsters or
+       especially barrels on the level. The game might slow down or even
+       get really screwed up.
+
+
+
+
+
+       Without a mouse?!?!?
+
+       If you don't have a mouse you can get help by pressing F1.
+       A short description:
+		The keys 'A' - '*' select diffirent objects.
+		With space you can turn 'continuous paint' on or off.
+		'R' activates square draw.
+
+
+
+
+			LOOK OUT FOR OUR FUTURE PRODUCTIONS!!!
+
