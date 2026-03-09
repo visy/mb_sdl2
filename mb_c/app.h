@@ -20,6 +20,10 @@ typedef struct {
     Mix_Chunk* sounds[64];
     char sound_names[64][32];
     int sound_count;
+
+    char level_names[128][32];
+    uint8_t* level_data[128];
+    int level_count;
 } App;
 
 bool app_init(App* app, ApplicationContext* ctx);
