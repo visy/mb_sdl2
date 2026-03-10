@@ -6,7 +6,13 @@
 typedef enum {
     GLYPH_SHOVEL_POINTER,
     GLYPH_ARROW_POINTER,
-    // Add other glyphs as needed
+    GLYPH_SHOP_SLOT_UNSELECTED,
+    GLYPH_SHOP_SLOT_SELECTED,
+    GLYPH_READY,
+    GLYPH_EQUIPMENT_START,
+    GLYPH_MAP_START = 100,
+    GLYPH_PLAYER_START = 1000,
+    GLYPH_PLAYER_DIG_START = 2000
 } GlyphType;
 
 typedef struct {

@@ -11,7 +11,7 @@ HDRS = context.h args.h images.h error.h app.h fonts.h glyphs.h $(S3MPLAY_DIR)/s
 SRCS = main.c args.c context.c error.c images.c fonts.c glyphs.c app.c \
        $(S3MPLAY_DIR)/s3m.c $(S3MPLAY_DIR)/s3m_file.c $(S3MPLAY_DIR)/s3m_sound.c \
        $(S3MPLAY_DIR)/channel.c $(S3MPLAY_DIR)/pattern.c $(S3MPLAY_DIR)/s3m_info.c
-OBJS = main.o args.o context.o error.o images.o fonts.o glyphs.o app.o \
+OBJS = main.o args.o context.o error.o images.o fonts.o glyphs.o app.o game.o \
        s3m.o s3m_file.o s3m_sound.o channel.o pattern.o s3m_info.o
 TARGET = mb_c.exe
 

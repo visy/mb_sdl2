@@ -23,6 +23,7 @@ typedef struct {
     SDL_Texture* buffer;
     s3m_t* music;
     bool music_loaded;
+    char current_music[64];
 } ApplicationContext;
 
 void context_init(ApplicationContext* ctx, const char* game_dir);
@@ -42,10 +43,12 @@ SDL_Scancode context_wait_key_pressed(ApplicationContext* ctx);
 
 // Music
 bool context_play_music(ApplicationContext* ctx, const char* filename);
+bool context_play_music_at(ApplicationContext* ctx, const char* filename, int order_idx);
 void context_stop_music(ApplicationContext* ctx);
 
 // Sound Effects
 Mix_Chunk* context_load_sample(ApplicationContext* ctx, const char* filename);
 void context_play_sample(Mix_Chunk* sample);
+void context_play_sample_freq(Mix_Chunk* sample, int frequency);
 
 #endif // CONTEXT_H

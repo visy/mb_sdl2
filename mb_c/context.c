@@ -17,6 +17,7 @@ void context_init(ApplicationContext* ctx, const char* game_dir) {
     strncpy(ctx->game_dir, game_dir, MAX_PATH - 1);
     ctx->game_dir[MAX_PATH - 1] = '\0';
 
+    printf("Initializing SDL...\n"); fflush(stdout);
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
         report_sdl_error("Failed to initialize SDL");
     }
@@ -28,11 +29,12 @@ void context_init(ApplicationContext* ctx, const char* game_dir) {
     s3m_initialize(ctx->music, 44100);
     ctx->music_loaded = false;
 
+    printf("Creating window...\n"); fflush(stdout);
     ctx->window = SDL_CreateWindow(
         "MineBombers Reloaded",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
-        640, 480,
+        1280, 960,
         SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_SHOWN
     );
 
@@ -43,7 +45,9 @@ void context_init(ApplicationContext* ctx, const char* game_dir) {
 
     ctx->buffer = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, 640, 480);
 
+    printf("Opening audio device (44100Hz, S16LSB)...\n"); fflush(stdout);
     if (Mix_OpenAudio(44100, AUDIO_S16LSB, 2, 2048) < 0) {
+        printf("Mix_OpenAudio Error: %s\n", Mix_GetError());
         report_sdl_error("Failed to open audio");
     }
     Mix_AllocateChannels(32);
@@ -66,7 +70,12 @@ void context_destroy(ApplicationContext* ctx) {
 }
 
 bool context_play_music(ApplicationContext* ctx, const char* filename) {
+    return context_play_music_at(ctx, filename, 0);
+}
+
+bool context_play_music_at(ApplicationContext* ctx, const char* filename, int order_idx) {
     if (!ctx->music) return false;
+    
     Mix_HookMusic(NULL, NULL);
     if (ctx->music_loaded) {
         s3m_stop(ctx->music);
@@ -76,13 +85,18 @@ bool context_play_music(ApplicationContext* ctx, const char* filename) {
 
     char path[MAX_PATH];
     build_path(ctx->game_dir, filename, path, sizeof(path));
+    
+    printf("Loading music: %s (at order %d) from path: %s\n", filename, order_idx, path); fflush(stdout);
 
     if (s3m_load(ctx->music, path) == 0) {
-        if (ctx->music->header->mastervol == 0) ctx->music->header->mastervol = 64;
-        s3m_play(ctx->music);
+        if (ctx->music->header->master_vol == 0) ctx->music->header->master_vol = 64;
+        s3m_play_at(ctx->music, order_idx);
         ctx->music_loaded = true;
+        strncpy(ctx->current_music, filename, 63);
         Mix_HookMusic(s3m_sound_callback, ctx->music);
         return true;
+    } else {
+        printf("FAILED to load S3M: %s\n", path); fflush(stdout);
     }
     return false;
 }
@@ -94,6 +108,7 @@ void context_stop_music(ApplicationContext* ctx) {
         s3m_stop(ctx->music);
         s3m_unload(ctx->music);
         ctx->music_loaded = false;
+        ctx->current_music[0] = '\0';
     }
 }
 
@@ -113,51 +128,36 @@ Mix_Chunk* context_load_sample(ApplicationContext* ctx, const char* filename) {
         return NULL;
     }
 
-    // Create a WAV header in memory to wrap the raw 8-bit mono 11025Hz data
-    uint32_t total_len = 44 + pcm_len;
-    uint8_t* wav_buf = malloc(total_len);
-    if (!wav_buf) {
-        fclose(f);
+    uint8_t* raw_data = malloc(pcm_len);
+    fread(raw_data, 1, pcm_len, f);
+    fclose(f);
+
+    SDL_AudioCVT cvt;
+    if (SDL_BuildAudioCVT(&cvt, AUDIO_U8, 1, 11025, AUDIO_S16LSB, 2, 44100) < 0) {
+        free(raw_data);
         return NULL;
     }
 
-    uint32_t freq = 11025;
-    uint16_t channels = 1;
-    uint16_t bits = 8;
-    uint32_t byte_rate = freq * channels * bits / 8;
-    uint16_t block_align = channels * bits / 8;
+    cvt.len = pcm_len;
+    cvt.buf = malloc(pcm_len * cvt.len_mult);
+    memcpy(cvt.buf, raw_data, pcm_len);
+    free(raw_data);
 
-    memcpy(wav_buf + 0, "RIFF", 4);
-    uint32_t chunk_size = total_len - 8;
-    memcpy(wav_buf + 4, &chunk_size, 4);
-    memcpy(wav_buf + 8, "WAVE", 4);
-    memcpy(wav_buf + 12, "fmt ", 4);
-    uint32_t fmt_size = 16;
-    memcpy(wav_buf + 16, &fmt_size, 4);
-    uint16_t format_tag = 1; // PCM
-    memcpy(wav_buf + 20, &format_tag, 2);
-    memcpy(wav_buf + 22, &channels, 2);
-    memcpy(wav_buf + 24, &freq, 4);
-    memcpy(wav_buf + 28, &byte_rate, 4);
-    memcpy(wav_buf + 32, &block_align, 2);
-    memcpy(wav_buf + 34, &bits, 2);
-    memcpy(wav_buf + 36, "data", 4);
-    memcpy(wav_buf + 40, &pcm_len, 4);
+    if (SDL_ConvertAudio(&cvt) < 0) {
+        free(cvt.buf);
+        return NULL;
+    }
 
-    fread(wav_buf + 44, 1, pcm_len, f);
-    fclose(f);
-
-    // Let SDL_mixer load it and manage the memory
-    SDL_RWops* rw = SDL_RWFromMem(wav_buf, total_len);
-    Mix_Chunk* chunk = Mix_LoadWAV_RW(rw, 1); // 1 = auto-close RW
-    
-    // We can free our temporary wav_buf because Mix_LoadWAV_RW copies the data
-    free(wav_buf);
-
+    Mix_Chunk* chunk = Mix_QuickLoad_RAW(cvt.buf, cvt.len_cvt);
     return chunk;
 }
 
 void context_play_sample(Mix_Chunk* sample) {
+    if (sample) Mix_PlayChannel(-1, sample, 0);
+}
+
+void context_play_sample_freq(Mix_Chunk* sample, int frequency) {
+    (void)frequency;
     if (sample) Mix_PlayChannel(-1, sample, 0);
 }
 
