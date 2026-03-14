@@ -51,6 +51,7 @@ void context_init(ApplicationContext* ctx, const char* game_dir) {
         report_sdl_error("Failed to open audio");
     }
     Mix_AllocateChannels(32);
+    Mix_Volume(-1,16);
 }
 
 void context_destroy(ApplicationContext* ctx) {

@@ -63,11 +63,11 @@ bool app_init(App* app, ApplicationContext* ctx) {
     if (!context_load_spy(ctx, "MAIN3.SPY", &app->main_menu)) return false;
     if (!context_load_spy(ctx, "SIKA.SPY", &app->sika)) return false;
     if (!context_load_spy(ctx, "SHOPPIC.SPY", &app->shop)) return false;
-    if (!context_load_spy(ctx, "SHAPET.SPY", &app->shapet)) return false;
     if (!context_load_spy(ctx, "PLAYERS.SPY", &app->players)) return false;
 
     if (!context_load_spy(ctx, "INFO1.SPY", &app->info[0])) return false;
     if (!context_load_spy(ctx, "INFO3.SPY", &app->info[1])) return false;
+    if (!context_load_spy(ctx, "SHAPET.SPY", &app->info[2])) return false;
     if (!context_load_spy(ctx, "INFO2.SPY", &app->info[3])) return false;
     
     if (!context_load_spy(ctx, "CODES.SPY", &app->codes)) return false;
@@ -85,8 +85,10 @@ bool app_init(App* app, ApplicationContext* ctx) {
 
     load_registered(ctx->game_dir, app->registered, sizeof(app->registered));
 
-    app->player_cash = 100;
+    app->player_cash = 500;
     app->player_inventory[EQUIP_SMALL_BOMB] = 5;
+    app->player_inventory[EQUIP_BIG_BOMB] = 5;
+    app->player_inventory[EQUIP_DYNAMITE] = 5;
 
     DIR* d = opendir(ctx->game_dir);
     if (d) {
@@ -101,6 +103,12 @@ bool app_init(App* app, ApplicationContext* ctx) {
                         app->sound_names[app->sound_count][31] = '\0';
                         if (STRICMP(dir->d_name, "KILI.VOC") == 0) app->sound_kili = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "PICAXE.VOC") == 0) app->sound_picaxe = app->sounds[app->sound_count];
+                        if (STRICMP(dir->d_name, "EXPLOS1.VOC") == 0) app->sound_explos1 = app->sounds[app->sound_count];
+                        if (STRICMP(dir->d_name, "EXPLOS2.VOC") == 0) app->sound_explos2 = app->sounds[app->sound_count];
+                        if (STRICMP(dir->d_name, "EXPLOS3.VOC") == 0) app->sound_explos3 = app->sounds[app->sound_count];
+                        if (STRICMP(dir->d_name, "EXPLOS4.VOC") == 0) app->sound_explos4 = app->sounds[app->sound_count];
+                        if (STRICMP(dir->d_name, "EXPLOS5.VOC") == 0) app->sound_explos5 = app->sounds[app->sound_count];
+                        if (STRICMP(dir->d_name, "PIKKUPOM.VOC") == 0) app->sound_pikkupom = app->sounds[app->sound_count];
                         app->sound_count++;
                     }
                 }
@@ -151,7 +159,6 @@ void app_destroy(App* app) {
     destroy_texture_palette(&app->main_menu);
     destroy_texture_palette(&app->sika);
     destroy_texture_palette(&app->shop);
-    destroy_texture_palette(&app->shapet);
     destroy_texture_palette(&app->players);
     for (int i = 0; i < 4; ++i) destroy_texture_palette(&app->info[i]);
     destroy_texture_palette(&app->codes);

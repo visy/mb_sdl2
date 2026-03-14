@@ -31,6 +31,7 @@ typedef struct {
     int animation_timer;
     bool is_digging;
     bool is_dead;
+    int selected_weapon;
 } Actor;
 
 typedef struct {

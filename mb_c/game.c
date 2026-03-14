@@ -3,8 +3,30 @@
 #include <stdlib.h>
 #include <string.h>
 
+static const int SMALL_BOMB_PATTERN[][2] = {
+  {-1, 0}, {1, 0}, {0, -1}, {0, 1}
+};
+
+static const int BIG_BOMB_PATTERN[][2] = {
+  {-1, 0}, {1, 0}, {0, -1}, {0, 1},
+  {-2, 0}, {-1, 1}, {0, 2}, {1, 1},
+  {2, 0}, {1, -1}, {0, -2}, {-1, -1}
+};
+
+static const int DYNAMITE_PATTERN[][2] = {
+  {-1, 0}, {1, 0}, {0, -1}, {0, 1},
+  {-2, 0}, {-1, 1}, {0, 2}, {1, 1},
+  {2, 0}, {1, -1}, {0, -2}, {-1, -1},
+  {-3, 0}, {-3, 1}, {-2, 1}, {-2, 2},
+  {-1, 2}, {-1, 3}, {0, 3}, {1, 3},
+  {1, 2}, {2, 2}, {2, 1}, {3, 1},
+  {3, 0}, {3, -1}, {2, -1}, {2, -2},
+  {1, -2}, {1, -3}, {0, -3}, {-1, -3},
+  {-1, -2}, {-2, -2}, {-2, -1}, {-3, -1}
+};
+
 static bool is_passable(uint8_t val) {
-    if (val == 0x30 || val == 0x66 || val == 0xAF) return true;
+    if (val == 0x30 || val == 0x66 || val == 0xAF || val == 0x84) return true;
     return false;
 }
 
@@ -21,6 +43,31 @@ static bool is_sand(uint8_t val) {
 
 static bool is_stone(uint8_t val) {
     return (val >= 0x43 && val <= 0x46) || (val >= 0x37 && val <= 0x39) || val == 0x41 || val == 0x70 || val == 0x71;
+}
+
+static void explode_cell(World* world, int cx, int cy) {
+    if (cx < 0 || cx >= MAP_WIDTH || cy < 0 || cy >= MAP_HEIGHT) return;
+    
+    uint8_t val = world->tiles[cy][cx];
+    if (is_stone(val)) {
+        if (rand() % 2 == 0) {
+            world->tiles[cy][cx] = 0x71;
+            world->hits[cy][cx] = 500;
+        } else {
+            world->tiles[cy][cx] = 0x70;
+            world->hits[cy][cx] = 1000;
+        }
+    } else if (val != 0x31) {
+        world->tiles[cy][cx] = 0x84;
+        world->timer[cy][cx] = 3;
+    }
+}
+
+static void explode_pattern(World* world, int cx, int cy, const int pattern[][2], int pattern_size) {
+    explode_cell(world, cx, cy);
+    for (int i = 0; i < pattern_size; ++i) {
+        explode_cell(world, cx + pattern[i][1], cy + pattern[i][0]);
+    }
 }
 
 static int get_initial_hits(uint8_t val) {
@@ -48,11 +95,20 @@ void game_init_world(World* world, uint8_t* level_data) {
     world->player.facing = DIR_RIGHT;
     world->player.moving = false;
     world->player.is_digging = false;
+    world->player.selected_weapon = EQUIP_SMALL_BOMB;
 }
 
 static void render_world(App* app, ApplicationContext* ctx, World* world) {
     SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
     SDL_RenderCopy(ctx->renderer, app->players.texture, NULL, NULL);
+
+    int pos_x = 12;
+    int wep = world->player.selected_weapon;
+    glyphs_render(&app->glyphs, ctx->renderer, pos_x, 0, (GlyphType)(GLYPH_EQUIPMENT_START + wep));
+    char count_str[16];
+    snprintf(count_str, sizeof(count_str), "%d", app->player_inventory[wep]);
+    SDL_Color cyan = {0, 255, 255, 255};
+    render_text(ctx->renderer, &app->font, pos_x + 18, 0, cyan, count_str);
 
     for (int y = 0; y < MAP_HEIGHT; ++y) {
         for (int x = 0; x < MAP_WIDTH; ++x) {
@@ -100,8 +156,40 @@ void game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                         int cx = world.player.pos.x / 10;
                         int cy = (world.player.pos.y - 35) / 10;
                         if (cx >= 0 && cx < MAP_WIDTH && cy >= 0 && cy < MAP_HEIGHT) {
-                            world.tiles[cy][cx] = 0x57; 
-                            world.timer[cy][cx] = 60;
+                            int w = world.player.selected_weapon;
+                            if (app->player_inventory[w] > 0 && (world.tiles[cy][cx] == 0x30 || is_treasure(world.tiles[cy][cx]))) {
+                                if (w == EQUIP_SMALL_BOMB) { world.tiles[cy][cx] = 0x57; world.timer[cy][cx] = 90; app->player_inventory[w]--; }
+                                else if (w == EQUIP_BIG_BOMB) { world.tiles[cy][cx] = 0x58; world.timer[cy][cx] = 90; app->player_inventory[w]--; }
+                                else if (w == EQUIP_DYNAMITE) { world.tiles[cy][cx] = 0x59; world.timer[cy][cx] = 60; app->player_inventory[w]--; }
+
+                                if (app->player_inventory[w] == 0) {
+                                    for (int i = 1; i < EQUIP_TOTAL; ++i) {
+                                        int next_w = (world.player.selected_weapon + i) % EQUIP_TOTAL;
+                                        if (app->player_inventory[next_w] > 0) {
+                                            world.player.selected_weapon = next_w;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } break;
+                    case SDL_SCANCODE_A: {
+                        for (int i = 1; i < EQUIP_TOTAL; ++i) {
+                            int w = (world.player.selected_weapon + EQUIP_TOTAL - i) % EQUIP_TOTAL;
+                            if (app->player_inventory[w] > 0 || w == EQUIP_SMALL_BOMB) {
+                                world.player.selected_weapon = w;
+                                break;
+                            }
+                        }
+                    } break;
+                    case SDL_SCANCODE_S: {
+                        for (int i = 1; i < EQUIP_TOTAL; ++i) {
+                            int w = (world.player.selected_weapon + i) % EQUIP_TOTAL;
+                            if (app->player_inventory[w] > 0 || w == EQUIP_SMALL_BOMB) {
+                                world.player.selected_weapon = w;
+                                break;
+                            }
                         }
                     } break;
                     default: break;
@@ -193,7 +281,30 @@ void game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
             for (int x = 0; x < MAP_WIDTH; ++x) {
                 if (world.timer[y][x] > 0) {
                     world.timer[y][x]--;
-                    if (world.timer[y][x] == 0) world.tiles[y][x] = 0x30;
+                    if (world.timer[y][x] == 0) {
+                        uint8_t t = world.tiles[y][x];
+                        if (t == 0x78) {
+                            if (app->sound_pikkupom) context_play_sample_freq(app->sound_pikkupom, 11000);
+                            explode_pattern(&world, x, y, SMALL_BOMB_PATTERN, sizeof(SMALL_BOMB_PATTERN)/sizeof(SMALL_BOMB_PATTERN[0]));
+                        } else if (t == 0x8C) {
+                            if (app->sound_explos1) context_play_sample_freq(app->sound_explos1, 11000);
+                            explode_pattern(&world, x, y, BIG_BOMB_PATTERN, sizeof(BIG_BOMB_PATTERN)/sizeof(BIG_BOMB_PATTERN[0]));
+                        } else if (t == 0x8E) {
+                            if (app->sound_explos2) context_play_sample_freq(app->sound_explos2, 11000);
+                            explode_pattern(&world, x, y, DYNAMITE_PATTERN, sizeof(DYNAMITE_PATTERN)/sizeof(DYNAMITE_PATTERN[0]));
+                        } else {
+                            world.tiles[y][x] = 0x30;
+                        }
+                    } else {
+                        int clock = world.timer[y][x] + 1;
+                        uint8_t t = world.tiles[y][x];
+                        if (t == 0x57 && clock <= 60) world.tiles[y][x] = 0x77;
+                        else if (t == 0x77 && clock <= 30) world.tiles[y][x] = 0x78;
+                        else if (t == 0x58 && clock <= 60) world.tiles[y][x] = 0x8B;
+                        else if (t == 0x8B && clock <= 30) world.tiles[y][x] = 0x8C;
+                        else if (t == 0x59 && clock <= 40) world.tiles[y][x] = 0x8D;
+                        else if (t == 0x8D && clock <= 20) world.tiles[y][x] = 0x8E;
+                    }
                 }
             }
         }

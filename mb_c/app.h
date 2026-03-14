@@ -41,7 +41,6 @@ typedef struct {
     TexturePalette main_menu;
     TexturePalette sika; // Glyphs
     TexturePalette shop;
-    TexturePalette shapet;
     TexturePalette players;
     
     TexturePalette info[4];
@@ -56,6 +55,12 @@ typedef struct {
     int sound_count;
     Mix_Chunk* sound_kili;
     Mix_Chunk* sound_picaxe;
+    Mix_Chunk* sound_explos1;
+    Mix_Chunk* sound_explos2;
+    Mix_Chunk* sound_explos3;
+    Mix_Chunk* sound_explos4;
+    Mix_Chunk* sound_explos5;
+    Mix_Chunk* sound_pikkupom;
 
     char level_names[128][32];
     uint8_t* level_data[128];
