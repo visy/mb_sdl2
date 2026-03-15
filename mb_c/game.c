@@ -87,10 +87,10 @@ static void apply_explosion_damage(World* world, int cx, int cy, int dmg) {
     }
 }
 
-static void explode_cell(World* world, int cx, int cy) {
+static void explode_cell(World* world, int cx, int cy, int dmg) {
     if (cx < 0 || cx >= MAP_WIDTH || cy < 0 || cy >= MAP_HEIGHT) return;
     
-    apply_explosion_damage(world, cx, cy, 25);
+    apply_explosion_damage(world, cx, cy, dmg);
 
     uint8_t val = world->tiles[cy][cx];
     
@@ -123,10 +123,10 @@ static void explode_cell(World* world, int cx, int cy) {
     }
 }
 
-static void explode_pattern(World* world, int cx, int cy, const int pattern[][2], int pattern_size) {
-    explode_cell(world, cx, cy);
+static void explode_pattern(World* world, int cx, int cy, int dmg, const int pattern[][2], int pattern_size) {
+    explode_cell(world, cx, cy, dmg);
     for (int i = 0; i < pattern_size; ++i) {
-        explode_cell(world, cx + pattern[i][1], cy + pattern[i][0]);
+        explode_cell(world, cx + pattern[i][1], cy + pattern[i][0], dmg);
     }
 }
 
@@ -494,14 +494,21 @@ void game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                         uint8_t t = world.tiles[y][x];
                         if (t == TILE_SMALL_BOMB3) {
                             if (app->sound_pikkupom) context_play_sample_freq(app->sound_pikkupom, 11000);
-                            explode_pattern(&world, x, y, SMALL_BOMB_PATTERN, sizeof(SMALL_BOMB_PATTERN)/sizeof(SMALL_BOMB_PATTERN[0]));
+                            explode_pattern(&world, x, y, 60, SMALL_BOMB_PATTERN, sizeof(SMALL_BOMB_PATTERN)/sizeof(SMALL_BOMB_PATTERN[0]));
                         } else if (t == TILE_BIG_BOMB3) {
                             if (app->sound_explos3) context_play_sample_freq(app->sound_explos3, 11000);
-                            explode_pattern(&world, x, y, BIG_BOMB_PATTERN, sizeof(BIG_BOMB_PATTERN)/sizeof(BIG_BOMB_PATTERN[0]));
+                            explode_pattern(&world, x, y, 84, BIG_BOMB_PATTERN, sizeof(BIG_BOMB_PATTERN)/sizeof(BIG_BOMB_PATTERN[0]));
                         } else if (t == TILE_DYNAMITE3) {
                             if (app->sound_explos2) context_play_sample_freq(app->sound_explos2, 11000);
-                            explode_pattern(&world, x, y, DYNAMITE_PATTERN, sizeof(DYNAMITE_PATTERN)/sizeof(DYNAMITE_PATTERN[0]));
-                        } else world.tiles[y][x] = TILE_PASSAGE;
+                            explode_pattern(&world, x, y, 100, DYNAMITE_PATTERN, sizeof(DYNAMITE_PATTERN)/sizeof(DYNAMITE_PATTERN[0]));
+                        } else {
+                            world.tiles[y][x] = TILE_PASSAGE;
+                            for (int p = 0; p < world.num_players; p++) {
+                                if (world.actors[p].is_dead && (world.actors[p].pos.x / 10) == x && ((world.actors[p].pos.y - 30) / 10) == y) {
+                                    world.tiles[y][x] = TILE_BLOOD;
+                                }
+                            }
+                        }
                     } else {
                         int clock = world.timer[y][x] + 1;
                         uint8_t t = world.tiles[y][x];
