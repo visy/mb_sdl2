@@ -4,6 +4,7 @@
 #include "context.h"
 #include "fonts.h"
 #include "glyphs.h"
+#include "input.h"
 
 typedef enum {
     EQUIP_SMALL_BOMB,
@@ -36,6 +37,8 @@ typedef enum {
     EQUIP_TOTAL
 } Equipment;
 
+#define MAX_PLAYERS 2
+
 typedef struct {
     TexturePalette title;
     TexturePalette main_menu;
@@ -61,13 +64,18 @@ typedef struct {
     Mix_Chunk* sound_explos4;
     Mix_Chunk* sound_explos5;
     Mix_Chunk* sound_pikkupom;
+    Mix_Chunk* sound_aargh;
 
     char level_names[128][32];
     uint8_t* level_data[128];
     int level_count;
 
-    uint32_t player_cash;
-    int player_inventory[EQUIP_TOTAL];
+    uint32_t player_cash[MAX_PLAYERS];
+    int player_inventory[MAX_PLAYERS][EQUIP_TOTAL];
+    char player_name[MAX_PLAYERS][16];
+    InputConfig input_config;
+    int current_round;
+    int total_rounds;
 } App;
 
 bool app_init(App* app, ApplicationContext* ctx);
