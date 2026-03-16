@@ -51,7 +51,12 @@
 #define TILE_GOLD_RUBIN 0x99
 #define TILE_GOLD_CROWN 0x9A
 #define TILE_TELEPORT 0x9C
+#define TILE_ATOMIC1 0x9D
+#define TILE_ATOMIC2 0x9E
+#define TILE_ATOMIC3 0x9F
 #define TILE_SLIME_CORPSE 0xAF
+#define TILE_SMOKE1 0x61
+#define TILE_SMOKE2 0x62
 #define TILE_EXPLOSION 0x84
 
 #define BURNED_L 1
@@ -95,12 +100,20 @@ typedef struct {
     int round_end_timer;
     bool exited;
     bool god_mode;
+    uint8_t bomb_damage;
+    bool darkness;
+    bool fog[MAP_HEIGHT][MAP_WIDTH];
 } World;
 
 bool is_passable(uint8_t val);
 bool is_stone(uint8_t val);
 
+typedef struct {
+    bool player_survived[MAX_PLAYERS];
+    uint32_t player_cash_earned[MAX_PLAYERS];
+} RoundResult;
+
 void game_init_world(World* world, uint8_t* level_data, int num_players);
-void game_run(App* app, ApplicationContext* ctx, uint8_t* level_data);
+RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data);
 
 #endif // GAME_H

@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 static const int SMALL_BOMB_PATTERN[][2] = {
   {-1, 0}, {1, 0}, {0, -1}, {0, 1}
@@ -26,7 +27,7 @@ static const int DYNAMITE_PATTERN[][2] = {
 };
 
 bool is_passable(uint8_t val) {
-    if (val == TILE_PASSAGE || val == TILE_TELEPORT || val == TILE_BLOOD || val == TILE_EXPLOSION || (val >= 0x3A && val <= 0x40) || val == 0xAF) return true;
+    if (val == TILE_PASSAGE || val == TILE_TELEPORT || val == TILE_BLOOD || val == TILE_EXPLOSION || val == TILE_SMOKE1 || val == TILE_SMOKE2 || (val >= 0x3A && val <= 0x40) || val == 0xAF) return true;
     return false;
 }
 
@@ -59,6 +60,64 @@ bool is_stone(uint8_t val) {
     return (val >= TILE_STONE1 && val <= TILE_STONE4) || (val >= TILE_STONE_TOP_LEFT && val <= TILE_STONE_BOTTOM_RIGHT) || val == TILE_STONE_BOTTOM_LEFT;
 }
 
+static const uint8_t SEE_THROUGH_BITMAP[32] = {
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+    0x00, 0x00, 0x80, 0x03, 0xF8, 0x0F, 0x88, 0xF1,
+    0x0F, 0xFC, 0xFF, 0xF7, 0xEF, 0x8F, 0x30, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+
+static bool see_through(uint8_t val) {
+    return (SEE_THROUGH_BITMAP[val / 8] & (1 << (val & 7))) != 0;
+}
+
+static void reveal_view(World* world, int px, int py, Direction facing) {
+    for (int offset = -20; offset <= 20; offset++) {
+        int abs_offset = offset < 0 ? -offset : offset;
+        int slope_error = 2 * abs_offset - 20;
+        int cx = px, cy = py;
+
+        for (int step = 0; step <= 20; step++) {
+            if (cx < 0 || cx >= MAP_WIDTH || cy < 0 || cy >= MAP_HEIGHT) break;
+            world->fog[cy][cx] = false;
+            if (!see_through(world->tiles[cy][cx])) break;
+
+            if (slope_error > 0) {
+                switch (facing) {
+                    case DIR_RIGHT: case DIR_LEFT: cy += (offset < 0) ? -1 : 1; break;
+                    case DIR_UP: case DIR_DOWN:    cx += (offset < 0) ? -1 : 1; break;
+                }
+                slope_error -= 2 * 20;
+            }
+            slope_error += 2 * abs_offset;
+
+            switch (facing) {
+                case DIR_RIGHT: cx++; break;
+                case DIR_LEFT:  cx--; break;
+                case DIR_UP:    cy--; break;
+                case DIR_DOWN:  cy++; break;
+            }
+        }
+    }
+
+    // Also reveal along facing direction while passable (corridor reveal)
+    int cx = px, cy = py;
+    while (cx >= 0 && cx < MAP_WIDTH && cy >= 0 && cy < MAP_HEIGHT && is_passable(world->tiles[cy][cx])) {
+        for (int d = 0; d < 4; d++) {
+            int nx = cx + (d == 0 ? 1 : d == 1 ? -1 : 0);
+            int ny = cy + (d == 2 ? -1 : d == 3 ? 1 : 0);
+            if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT)
+                world->fog[ny][nx] = false;
+        }
+        switch (facing) {
+            case DIR_RIGHT: cx++; break;
+            case DIR_LEFT:  cx--; break;
+            case DIR_UP:    cy--; break;
+            case DIR_DOWN:  cy++; break;
+        }
+    }
+}
+
 static void apply_explosion_damage(World* world, int cx, int cy, int dmg) {
     for (int p = 0; p < world->num_players; ++p) {
         Actor* actor = &world->actors[p];
@@ -67,18 +126,10 @@ static void apply_explosion_damage(World* world, int cx, int cy, int dmg) {
 
         int px = actor->pos.x / 10;
         int py = (actor->pos.y - 30) / 10;
-        int pdx = actor->pos.x % 10;
-        int pdy = (actor->pos.y - 30) % 10;
-        
-        bool hit = false;
-        if (px == cx && py == cy) hit = true;
-        else if (pdx > 5 && px + 1 == cx && py == cy) hit = true;
-        else if (pdx < 5 && px - 1 == cx && py == cy) hit = true;
-        else if (pdy > 5 && py + 1 == cy && px == cx) hit = true;
-        else if (pdy < 5 && py - 1 == cy && px == cx) hit = true;
 
-        if (hit) {
-            actor->health -= dmg;
+        if (px == cx && py == cy) {
+            int effective_dmg = dmg * world->bomb_damage / 100;
+            actor->health -= effective_dmg;
             if (actor->health <= 0) {
                 actor->health = 0;
                 actor->is_dead = true;
@@ -87,9 +138,9 @@ static void apply_explosion_damage(World* world, int cx, int cy, int dmg) {
     }
 }
 
-static void explode_cell(World* world, int cx, int cy, int dmg) {
+static void explode_cell_ex(World* world, int cx, int cy, int dmg, bool heavy) {
     if (cx < 0 || cx >= MAP_WIDTH || cy < 0 || cy >= MAP_HEIGHT) return;
-    
+
     apply_explosion_damage(world, cx, cy, dmg);
 
     uint8_t val = world->tiles[cy][cx];
@@ -99,9 +150,10 @@ static void explode_cell(World* world, int cx, int cy, int dmg) {
     if (cy > 0 && !is_passable(world->tiles[cy-1][cx])) world->burned[cy][cx] |= BURNED_U;
     if (cy < MAP_HEIGHT - 1 && !is_passable(world->tiles[cy+1][cx])) world->burned[cy][cx] |= BURNED_D;
 
-    if (val == TILE_SMALL_BOMB1 || val == TILE_SMALL_BOMB2 || val == TILE_SMALL_BOMB3 || 
-        val == TILE_BIG_BOMB1 || val == TILE_BIG_BOMB2 || val == TILE_BIG_BOMB3 || 
-        val == TILE_DYNAMITE1 || val == TILE_DYNAMITE2 || val == TILE_DYNAMITE3) {
+    if (val == TILE_SMALL_BOMB1 || val == TILE_SMALL_BOMB2 || val == TILE_SMALL_BOMB3 ||
+        val == TILE_BIG_BOMB1 || val == TILE_BIG_BOMB2 || val == TILE_BIG_BOMB3 ||
+        val == TILE_DYNAMITE1 || val == TILE_DYNAMITE2 || val == TILE_DYNAMITE3 ||
+        val == TILE_ATOMIC1 || val == TILE_ATOMIC2 || val == TILE_ATOMIC3) {
         if (world->timer[cy][cx] > 0) {
             world->timer[cy][cx] = 1;
             return;
@@ -110,7 +162,10 @@ static void explode_cell(World* world, int cx, int cy, int dmg) {
             world->timer[cy][cx] = 3;
         }
     } else if (is_stone(val) || val == TILE_BOULDER) {
-        if (rand() % 2 == 0) {
+        if (heavy) {
+            world->tiles[cy][cx] = TILE_EXPLOSION;
+            world->timer[cy][cx] = 3;
+        } else if (rand() % 2 == 0) {
             world->tiles[cy][cx] = TILE_STONE_CRACKED_HEAVY;
             world->hits[cy][cx] = 500;
         } else {
@@ -120,6 +175,20 @@ static void explode_cell(World* world, int cx, int cy, int dmg) {
     } else if (val != TILE_WALL) {
         world->tiles[cy][cx] = TILE_EXPLOSION;
         world->timer[cy][cx] = 3;
+    }
+}
+
+static void explode_cell(World* world, int cx, int cy, int dmg) {
+    explode_cell_ex(world, cx, cy, dmg, false);
+}
+
+static void explode_nuke(World* world, int cx, int cy) {
+    explode_cell_ex(world, cx, cy, 255, true);
+    for (int dc = -12; dc <= 12; ++dc) {
+        int cathet = (int)ceil(sqrt(144.0 - (double)(dc * dc)));
+        for (int dr = -cathet; dr <= cathet; ++dr) {
+            explode_cell_ex(world, cx + dc, cy + dr, 255, true);
+        }
     }
 }
 
@@ -230,61 +299,121 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
         render_text(ctx->renderer, &app->font, 12 + 70, 2, white, "GOD MODE ON");
     }
 
-    for (int y = 0; y < MAP_HEIGHT; ++y) {
+    if (world->darkness) {
+        // In darkness mode: first render borders (wall tiles on edges), then black overlay, then revealed cells
         for (int x = 0; x < MAP_WIDTH; ++x) {
-            uint8_t val = world->tiles[y][x];
-            glyphs_render(&app->glyphs, ctx->renderer, x * 10, y * 10 + 30, (GlyphType)(GLYPH_MAP_START + val));
+            glyphs_render(&app->glyphs, ctx->renderer, x * 10, 30, (GlyphType)(GLYPH_MAP_START + world->tiles[0][x]));
+            glyphs_render(&app->glyphs, ctx->renderer, x * 10, (MAP_HEIGHT - 1) * 10 + 30, (GlyphType)(GLYPH_MAP_START + world->tiles[MAP_HEIGHT - 1][x]));
         }
-    }
+        for (int y = 0; y < MAP_HEIGHT; ++y) {
+            glyphs_render(&app->glyphs, ctx->renderer, 0, y * 10 + 30, (GlyphType)(GLYPH_MAP_START + world->tiles[y][0]));
+            glyphs_render(&app->glyphs, ctx->renderer, (MAP_WIDTH - 1) * 10, y * 10 + 30, (GlyphType)(GLYPH_MAP_START + world->tiles[y][MAP_WIDTH - 1]));
+        }
 
-    for (int y = 0; y < MAP_HEIGHT; ++y) {
-        for (int x = 0; x < MAP_WIDTH; ++x) {
-            uint8_t val = world->tiles[y][x];
-            int px = x * 10;
-            int py = y * 10 + 30;
-            
-            if (val == TILE_EXPLOSION || is_passable(val)) {
-                uint8_t b = (val == TILE_EXPLOSION) ? 0xF : 0;
-                if (val != TILE_EXPLOSION) b = world->burned[y][x];
-                
-                if (b & BURNED_L && x > 0) {
-                    uint8_t n = world->tiles[y][x-1];
-                    if (is_sand(n) || n == TILE_GRAVEL_LIGHT || n == TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px - 4, py, GLYPH_BURNED_SAND_R);
-                    else if (is_stone(n) || n == TILE_STONE_CRACKED_LIGHT || n == TILE_STONE_CRACKED_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px - 4, py, GLYPH_BURNED_STONE_R);
-                }
-                if (b & BURNED_R && x < MAP_WIDTH - 1) {
-                    uint8_t n = world->tiles[y][x+1];
-                    if (is_sand(n) || n == TILE_GRAVEL_LIGHT || n == TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px + 10, py, GLYPH_BURNED_SAND_L);
-                    else if (is_stone(n) || n == TILE_STONE_CRACKED_LIGHT || n == TILE_STONE_CRACKED_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px + 10, py, GLYPH_BURNED_STONE_L);
-                }
-                if (b & BURNED_U && y > 0) {
-                    uint8_t n = world->tiles[y-1][x];
-                    if (is_sand(n) || n == TILE_GRAVEL_LIGHT || n == TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px, py - 3, GLYPH_BURNED_SAND_D);
-                    else if (is_stone(n) || n == TILE_STONE_CRACKED_LIGHT || n == TILE_STONE_CRACKED_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px, py - 3, GLYPH_BURNED_STONE_D);
-                }
-                if (b & BURNED_D && y < MAP_HEIGHT - 1) {
-                    uint8_t n = world->tiles[y+1][x];
-                    if (is_sand(n) || n == TILE_GRAVEL_LIGHT || n == TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px, py + 10, GLYPH_BURNED_SAND_U);
-                    else if (is_stone(n) || n == TILE_STONE_CRACKED_LIGHT || n == TILE_STONE_CRACKED_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px, py + 10, GLYPH_BURNED_STONE_U);
+        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+        SDL_Rect dark_rect = {10, 40, 620, 430};
+        SDL_RenderFillRect(ctx->renderer, &dark_rect);
+
+        for (int y = 1; y < MAP_HEIGHT - 1; ++y) {
+            for (int x = 1; x < MAP_WIDTH - 1; ++x) {
+                if (!world->fog[y][x]) {
+                    uint8_t val = world->tiles[y][x];
+                    glyphs_render(&app->glyphs, ctx->renderer, x * 10, y * 10 + 30, (GlyphType)(GLYPH_MAP_START + val));
                 }
             }
         }
-    }
 
-    for (int p = 0; p < world->num_players; ++p) {
-        Actor* actor = &world->actors[p];
-        if (!actor->is_dead) {
-            int base = actor->is_digging ? GLYPH_PLAYER_DIG_START : GLYPH_PLAYER_START;
-            if (p == 1) base += 4000; 
-            int anim_frame = 0;
-            if (actor->is_digging) {
-                static const int pp[] = {0, 1, 2, 3, 2, 1};
-                anim_frame = pp[actor->animation % 6];
-            } else {
-                anim_frame = actor->animation % 4;
+        // Burned borders for revealed cells only
+        for (int y = 1; y < MAP_HEIGHT - 1; ++y) {
+            for (int x = 1; x < MAP_WIDTH - 1; ++x) {
+                if (world->fog[y][x]) continue;
+                uint8_t val = world->tiles[y][x];
+                int px = x * 10;
+                int py = y * 10 + 30;
+                if (val == TILE_EXPLOSION || val == TILE_SMOKE1 || val == TILE_SMOKE2 || is_passable(val)) {
+                    uint8_t b = (val == TILE_EXPLOSION) ? 0xF : world->burned[y][x];
+                    if (b & BURNED_L && x > 0) { uint8_t n = world->tiles[y][x-1]; if (is_sand(n)||n==TILE_GRAVEL_LIGHT||n==TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs,ctx->renderer,px-4,py,GLYPH_BURNED_SAND_R); else if(is_stone(n)||n==TILE_STONE_CRACKED_LIGHT||n==TILE_STONE_CRACKED_HEAVY) glyphs_render(&app->glyphs,ctx->renderer,px-4,py,GLYPH_BURNED_STONE_R); }
+                    if (b & BURNED_R && x < MAP_WIDTH-1) { uint8_t n = world->tiles[y][x+1]; if (is_sand(n)||n==TILE_GRAVEL_LIGHT||n==TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs,ctx->renderer,px+10,py,GLYPH_BURNED_SAND_L); else if(is_stone(n)||n==TILE_STONE_CRACKED_LIGHT||n==TILE_STONE_CRACKED_HEAVY) glyphs_render(&app->glyphs,ctx->renderer,px+10,py,GLYPH_BURNED_STONE_L); }
+                    if (b & BURNED_U && y > 0) { uint8_t n = world->tiles[y-1][x]; if (is_sand(n)||n==TILE_GRAVEL_LIGHT||n==TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs,ctx->renderer,px,py-3,GLYPH_BURNED_SAND_D); else if(is_stone(n)||n==TILE_STONE_CRACKED_LIGHT||n==TILE_STONE_CRACKED_HEAVY) glyphs_render(&app->glyphs,ctx->renderer,px,py-3,GLYPH_BURNED_STONE_D); }
+                    if (b & BURNED_D && y < MAP_HEIGHT-1) { uint8_t n = world->tiles[y+1][x]; if (is_sand(n)||n==TILE_GRAVEL_LIGHT||n==TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs,ctx->renderer,px,py+10,GLYPH_BURNED_SAND_U); else if(is_stone(n)||n==TILE_STONE_CRACKED_LIGHT||n==TILE_STONE_CRACKED_HEAVY) glyphs_render(&app->glyphs,ctx->renderer,px,py+10,GLYPH_BURNED_STONE_U); }
+                }
             }
-            int p_glyph = base + (int)actor->facing + (anim_frame * 4);
-            glyphs_render(&app->glyphs, ctx->renderer, actor->pos.x - 5, actor->pos.y - 5, (GlyphType)p_glyph);
+        }
+
+        // Only render players in revealed cells
+        for (int p = 0; p < world->num_players; ++p) {
+            Actor* actor = &world->actors[p];
+            if (!actor->is_dead) {
+                int acx = actor->pos.x / 10;
+                int acy = (actor->pos.y - 30) / 10;
+                if (acx >= 0 && acx < MAP_WIDTH && acy >= 0 && acy < MAP_HEIGHT && !world->fog[acy][acx]) {
+                    int base = actor->is_digging ? GLYPH_PLAYER_DIG_START : GLYPH_PLAYER_START;
+                    if (p == 1) base += 4000;
+                    int anim_frame = 0;
+                    if (actor->is_digging) { static const int pp[] = {0,1,2,3,2,1}; anim_frame = pp[actor->animation % 6]; }
+                    else { anim_frame = actor->animation % 4; }
+                    int p_glyph = base + (int)actor->facing + (anim_frame * 4);
+                    glyphs_render(&app->glyphs, ctx->renderer, actor->pos.x - 5, actor->pos.y - 5, (GlyphType)p_glyph);
+                }
+            }
+        }
+    } else {
+        // Normal (non-darkness) rendering
+        for (int y = 0; y < MAP_HEIGHT; ++y) {
+            for (int x = 0; x < MAP_WIDTH; ++x) {
+                uint8_t val = world->tiles[y][x];
+                glyphs_render(&app->glyphs, ctx->renderer, x * 10, y * 10 + 30, (GlyphType)(GLYPH_MAP_START + val));
+            }
+        }
+
+        for (int y = 0; y < MAP_HEIGHT; ++y) {
+            for (int x = 0; x < MAP_WIDTH; ++x) {
+                uint8_t val = world->tiles[y][x];
+                int px = x * 10;
+                int py = y * 10 + 30;
+
+                if (val == TILE_EXPLOSION || val == TILE_SMOKE1 || val == TILE_SMOKE2 || is_passable(val)) {
+                    uint8_t b = (val == TILE_EXPLOSION) ? 0xF : world->burned[y][x];
+
+                    if (b & BURNED_L && x > 0) {
+                        uint8_t n = world->tiles[y][x-1];
+                        if (is_sand(n) || n == TILE_GRAVEL_LIGHT || n == TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px - 4, py, GLYPH_BURNED_SAND_R);
+                        else if (is_stone(n) || n == TILE_STONE_CRACKED_LIGHT || n == TILE_STONE_CRACKED_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px - 4, py, GLYPH_BURNED_STONE_R);
+                    }
+                    if (b & BURNED_R && x < MAP_WIDTH - 1) {
+                        uint8_t n = world->tiles[y][x+1];
+                        if (is_sand(n) || n == TILE_GRAVEL_LIGHT || n == TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px + 10, py, GLYPH_BURNED_SAND_L);
+                        else if (is_stone(n) || n == TILE_STONE_CRACKED_LIGHT || n == TILE_STONE_CRACKED_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px + 10, py, GLYPH_BURNED_STONE_L);
+                    }
+                    if (b & BURNED_U && y > 0) {
+                        uint8_t n = world->tiles[y-1][x];
+                        if (is_sand(n) || n == TILE_GRAVEL_LIGHT || n == TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px, py - 3, GLYPH_BURNED_SAND_D);
+                        else if (is_stone(n) || n == TILE_STONE_CRACKED_LIGHT || n == TILE_STONE_CRACKED_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px, py - 3, GLYPH_BURNED_STONE_D);
+                    }
+                    if (b & BURNED_D && y < MAP_HEIGHT - 1) {
+                        uint8_t n = world->tiles[y+1][x];
+                        if (is_sand(n) || n == TILE_GRAVEL_LIGHT || n == TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px, py + 10, GLYPH_BURNED_SAND_U);
+                        else if (is_stone(n) || n == TILE_STONE_CRACKED_LIGHT || n == TILE_STONE_CRACKED_HEAVY) glyphs_render(&app->glyphs, ctx->renderer, px, py + 10, GLYPH_BURNED_STONE_U);
+                    }
+                }
+            }
+        }
+
+        for (int p = 0; p < world->num_players; ++p) {
+            Actor* actor = &world->actors[p];
+            if (!actor->is_dead) {
+                int base = actor->is_digging ? GLYPH_PLAYER_DIG_START : GLYPH_PLAYER_START;
+                if (p == 1) base += 4000;
+                int anim_frame = 0;
+                if (actor->is_digging) {
+                    static const int pp[] = {0, 1, 2, 3, 2, 1};
+                    anim_frame = pp[actor->animation % 6];
+                } else {
+                    anim_frame = actor->animation % 4;
+                }
+                int p_glyph = base + (int)actor->facing + (anim_frame * 4);
+                glyphs_render(&app->glyphs, ctx->renderer, actor->pos.x - 5, actor->pos.y - 5, (GlyphType)p_glyph);
+            }
         }
     }
 
@@ -292,12 +421,17 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
     context_present(ctx);
 }
 
-void game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
+RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
     int tracks[] = {0, 39, 55};
     context_play_music_at(ctx, "OEKU.S3M", tracks[rand() % 3]);
     
     World world;
     game_init_world(&world, level_data, 2);
+    world.bomb_damage = app->options.bomb_damage;
+    world.darkness = app->options.darkness;
+    if (world.darkness) {
+        memset(world.fog, true, sizeof(world.fog));
+    }
 
     bool running = true;
     while (running) {
@@ -329,6 +463,7 @@ void game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                                     if (w == EQUIP_SMALL_BOMB) { world.tiles[cy][cx] = TILE_SMALL_BOMB1; world.timer[cy][cx] = 90; app->player_inventory[p][w]--; }
                                     else if (w == EQUIP_BIG_BOMB) { world.tiles[cy][cx] = TILE_BIG_BOMB1; world.timer[cy][cx] = 90; app->player_inventory[p][w]--; }
                                     else if (w == EQUIP_DYNAMITE) { world.tiles[cy][cx] = TILE_DYNAMITE1; world.timer[cy][cx] = 60; app->player_inventory[p][w]--; }
+                                    else if (w == EQUIP_ATOMIC_BOMB) { world.tiles[cy][cx] = TILE_ATOMIC1; world.timer[cy][cx] = 280; app->player_inventory[p][w]--; }
                                 }
                             }
                         } break;
@@ -422,6 +557,21 @@ void game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                         world.tiles[ncy][ncx] = TILE_PASSAGE;
                         context_play_sample_freq(app->sound_kili, 10000 + (rand()%5000));
                     }
+                    // Teleporter: activate when player reaches center of a teleporter tile
+                    if (c_dx == 5 && c_dy == 5 && world.tiles[ncy][ncx] == TILE_TELEPORT) {
+                        int tele[256][2], nt = 0;
+                        for (int ty = 0; ty < MAP_HEIGHT; ty++) for (int tx = 0; tx < MAP_WIDTH; tx++)
+                            if (world.tiles[ty][tx] == TILE_TELEPORT && (tx != ncx || ty != ncy)) {
+                                tele[nt][0] = tx; tele[nt][1] = ty; nt++;
+                            }
+                        if (nt > 0) {
+                            int r = rand() % nt;
+                            actor->pos.x = tele[r][0] * 10 + 5;
+                            actor->pos.y = tele[r][1] * 10 + 35;
+                            actor->moving = false;
+                            context_play_sample(app->sound_kili);
+                        }
+                    }
                     actor->animation_timer++;
                     if (actor->animation_timer >= 4) {
                         actor->animation = (actor->animation + 1) % 4;
@@ -433,21 +583,8 @@ void game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                     else if (actor->facing == DIR_RIGHT) ncx++;
                     else if (actor->facing == DIR_UP) ncy--;
                     else if (actor->facing == DIR_DOWN) ncy++;
-                    
-                    if (world.tiles[cy][cx] == TILE_TELEPORT) {
-                        int tele[256][2], nt = 0;
-                        for (int ty = 0; ty < MAP_HEIGHT; ty++) for (int tx = 0; tx < MAP_WIDTH; tx++)
-                            if (world.tiles[ty][tx] == TILE_TELEPORT && (tx != cx || ty != cy)) {
-                                tele[nt][0] = tx; tele[nt][1] = ty; nt++;
-                            }
-                        if (nt > 0) {
-                            int r = rand() % nt;
-                            actor->pos.x = tele[r][0] * 10 + 5;
-                            actor->pos.y = tele[r][1] * 10 + 35;
-                            actor->moving = false;
-                            context_play_sample(app->sound_kili);
-                        }
-                    } else if (ncx >= 0 && ncx < MAP_WIDTH && ncy >= 0 && ncy < MAP_HEIGHT) {
+
+                    if (ncx >= 0 && ncx < MAP_WIDTH && ncy >= 0 && ncy < MAP_HEIGHT) {
                         uint8_t target = world.tiles[ncy][ncx];
                         if (is_sand(target) || is_stone(target) || target == TILE_STONE_CRACKED_LIGHT || target == TILE_STONE_CRACKED_HEAVY || target == TILE_GRAVEL_LIGHT || target == TILE_GRAVEL_HEAVY) {
                             actor->is_digging = true;
@@ -499,11 +636,28 @@ void game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                             if (app->sound_pikkupom) context_play_sample_freq(app->sound_pikkupom, 11000);
                             explode_pattern(&world, x, y, 60, SMALL_BOMB_PATTERN, sizeof(SMALL_BOMB_PATTERN)/sizeof(SMALL_BOMB_PATTERN[0]));
                         } else if (t == TILE_BIG_BOMB3) {
-                            if (app->sound_explos3) context_play_sample_freq(app->sound_explos3, 11000);
+                            if (app->sound_explos1) context_play_sample_freq(app->sound_explos1, 11000);
                             explode_pattern(&world, x, y, 84, BIG_BOMB_PATTERN, sizeof(BIG_BOMB_PATTERN)/sizeof(BIG_BOMB_PATTERN[0]));
                         } else if (t == TILE_DYNAMITE3) {
                             if (app->sound_explos2) context_play_sample_freq(app->sound_explos2, 11000);
                             explode_pattern(&world, x, y, 100, DYNAMITE_PATTERN, sizeof(DYNAMITE_PATTERN)/sizeof(DYNAMITE_PATTERN[0]));
+                        } else if (t == TILE_ATOMIC1 || t == TILE_ATOMIC2 || t == TILE_ATOMIC3) {
+                            world.tiles[y][x] = TILE_PASSAGE;
+                            explode_nuke(&world, x, y);
+                            if (app->sound_explos3) {
+                                context_play_sample_freq(app->sound_explos3, 5000);
+                                context_play_sample_freq(app->sound_explos3, 9900);
+                                context_play_sample_freq(app->sound_explos3, 10000);
+                            }
+                        } else if (t == TILE_EXPLOSION) {
+                            world.tiles[y][x] = TILE_SMOKE1;
+                            world.timer[y][x] = 3;
+                        } else if (t == TILE_SMOKE1) {
+                            world.tiles[y][x] = TILE_SMOKE2;
+                            world.timer[y][x] = 3;
+                        } else if (t == TILE_SMOKE2) {
+                            world.tiles[y][x] = TILE_PASSAGE;
+                            world.timer[y][x] = 0;
                         } else {
                             world.tiles[y][x] = TILE_PASSAGE;
                             for (int p = 0; p < world.num_players; p++) {
@@ -521,7 +675,20 @@ void game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                         else if (t == TILE_BIG_BOMB2 && clock <= 30) world.tiles[y][x] = TILE_BIG_BOMB3;
                         else if (t == TILE_DYNAMITE1 && clock <= 40) world.tiles[y][x] = TILE_DYNAMITE2;
                         else if (t == TILE_DYNAMITE2 && clock <= 20) world.tiles[y][x] = TILE_DYNAMITE3;
+                        else if (t == TILE_ATOMIC1) world.tiles[y][x] = TILE_ATOMIC2;
+                        else if (t == TILE_ATOMIC2) world.tiles[y][x] = TILE_ATOMIC3;
+                        else if (t == TILE_ATOMIC3) world.tiles[y][x] = TILE_ATOMIC1;
                     }
+                }
+            }
+        }
+
+        if (world.darkness) {
+            for (int p = 0; p < world.num_players; p++) {
+                if (!world.actors[p].is_dead) {
+                    int px = world.actors[p].pos.x / 10;
+                    int py = (world.actors[p].pos.y - 30) / 10;
+                    reveal_view(&world, px, py, world.actors[p].facing);
                 }
             }
         }
@@ -529,4 +696,11 @@ void game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
         render_world(app, ctx, &world);
         SDL_Delay(16);
     }
+
+    RoundResult result;
+    memset(&result, 0, sizeof(result));
+    for (int p = 0; p < world.num_players; p++) {
+        result.player_survived[p] = !world.actors[p].is_dead;
+    }
+    return result;
 }

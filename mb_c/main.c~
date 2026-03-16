@@ -14,6 +14,10 @@ int main(int argc, char** argv) {
     ApplicationContext ctx;
     context_init(&ctx, args.path);
 
+    if (s3m_load(ctx.music, "orig/OEKU.S3M") == 0) {
+        s3m_print_arrangement(ctx.music);
+    }
+
     App app;
     if (!app_init(&app, &ctx)) {
         fprintf(stderr, "Failed to initialize application assets.\n");

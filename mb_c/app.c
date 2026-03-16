@@ -71,6 +71,19 @@ bool app_init(App* app, ApplicationContext* ctx) {
     if (!context_load_spy(ctx, "INFO2.SPY", &app->info[3])) return false;
     
     if (!context_load_spy(ctx, "CODES.SPY", &app->codes)) return false;
+    if (!context_load_spy(ctx, "OPTIONS5.SPY", &app->options_menu)) return false;
+    if (!context_load_spy(ctx, "LEVSELEC.SPY", &app->level_select)) return false;
+    if (!context_load_spy(ctx, "FINAL.SPY", &app->final_screen)) return false;
+
+    // Player avatars (PPM format)
+    static const char* avatar_win_files[] = {"SINVOIT.PPM", "PUNVOIT.PPM"};
+    static const char* avatar_lose_files[] = {"SINLOSE.PPM", "PUNLOSE.PPM"};
+    static const char* avatar_draw_files[] = {"SINDRAW.PPM", "PUNDRAW.PPM"};
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        context_load_ppm(ctx, avatar_win_files[i], &app->avatar_win[i]);
+        context_load_ppm(ctx, avatar_lose_files[i], &app->avatar_lose[i]);
+        context_load_ppm(ctx, avatar_draw_files[i], &app->avatar_draw[i]);
+    }
 
     glyphs_init(&app->glyphs, app->sika.texture);
 
@@ -97,11 +110,24 @@ bool app_init(App* app, ApplicationContext* ctx) {
         app->player_inventory[p][EQUIP_SMALL_BOMB] = 5;
         app->player_inventory[p][EQUIP_BIG_BOMB] = 5;
         app->player_inventory[p][EQUIP_DYNAMITE] = 5;
+        app->player_inventory[p][EQUIP_ATOMIC_BOMB] = 2;
         snprintf(app->player_name[p], 16, "Plr %d", p + 1);
     }
 
     app->current_round = 0;
-    app->total_rounds = 15;
+    app->selected_level_count = 0;
+
+    app->options.cash = 750;
+    app->options.treasures = 45;
+    app->options.rounds = 15;
+    app->options.round_time_secs = 420;
+    app->options.players = 2;
+    app->options.speed = 8;
+    app->options.bomb_damage = 100;
+    app->options.darkness = false;
+    app->options.free_market = false;
+    app->options.selling = false;
+    app->options.win_by_money = true;
 
     DIR* d = opendir(ctx->game_dir);
     if (d) {
@@ -117,11 +143,13 @@ bool app_init(App* app, ApplicationContext* ctx) {
                         if (STRICMP(dir->d_name, "KILI.VOC") == 0) app->sound_kili = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "PICAXE.VOC") == 0) app->sound_picaxe = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "PIKKUPOM.VOC") == 0) app->sound_pikkupom = app->sounds[app->sound_count];
+                        if (STRICMP(dir->d_name, "EXPLOS1.VOC") == 0) app->sound_explos1 = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "EXPLOS2.VOC") == 0) app->sound_explos2 = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "EXPLOS3.VOC") == 0) app->sound_explos3 = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "AARGH.VOC") == 0) app->sound_aargh = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "EXPLOS4.VOC") == 0) app->sound_explos4 = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "EXPLOS5.VOC") == 0) app->sound_explos5 = app->sounds[app->sound_count];
+                        if (STRICMP(dir->d_name, "APPLAUSE.VOC") == 0) app->sound_applause = app->sounds[app->sound_count];
                         app->sound_count++;
                     }
                 }
@@ -176,6 +204,14 @@ void app_destroy(App* app) {
     destroy_texture_palette(&app->players);
     for (int i = 0; i < 4; ++i) destroy_texture_palette(&app->info[i]);
     destroy_texture_palette(&app->codes);
+    destroy_texture_palette(&app->options_menu);
+    destroy_texture_palette(&app->level_select);
+    destroy_texture_palette(&app->final_screen);
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        destroy_texture_palette(&app->avatar_win[i]);
+        destroy_texture_palette(&app->avatar_lose[i]);
+        destroy_texture_palette(&app->avatar_draw[i]);
+    }
     destroy_font(&app->font);
     for (int i = 0; i < app->sound_count; ++i) if (app->sounds[i]) Mix_FreeChunk(app->sounds[i]);
     for (int i = 0; i < app->level_count; ++i) if (app->level_data[i]) free(app->level_data[i]);
@@ -288,6 +324,297 @@ static void app_run_music_debugger(App* app, ApplicationContext* ctx) {
     }
 }
 
+// ==================== OPTIONS MENU ====================
+
+typedef enum {
+    OPT_CASH, OPT_TREASURES, OPT_ROUNDS, OPT_TIME, OPT_PLAYERS,
+    OPT_SPEED, OPT_BOMB_DAMAGE, OPT_DARKNESS, OPT_FREE_MARKET,
+    OPT_SELLING, OPT_WINNER, OPT_REDEFINE_KEYS, OPT_LOAD_LEVELS,
+    OPT_MAIN_MENU, OPT_COUNT
+} OptionItem;
+
+#define OPT_MENU_X 192
+#define OPT_MENU_Y 96
+#define OPT_ITEM_H 24
+
+static void opt_cursor_pos(OptionItem item, int* x, int* y) {
+    *x = OPT_MENU_X + 25;
+    *y = OPT_MENU_Y + 6 + item * OPT_ITEM_H;
+}
+
+static void opt_value_minus(GameOptions* o, OptionItem item) {
+    switch (item) {
+        case OPT_CASH: o->cash = (o->cash >= 100) ? o->cash - 100 : 0; break;
+        case OPT_TREASURES: if (o->treasures > 0) o->treasures--; break;
+        case OPT_ROUNDS: if (o->rounds > 1) o->rounds--; break;
+        case OPT_TIME: o->round_time_secs = (o->round_time_secs >= 15) ? o->round_time_secs - 15 : 0; break;
+        case OPT_PLAYERS: if (o->players > 1) o->players--; break;
+        case OPT_SPEED: if (o->speed < 33) o->speed++; break;
+        case OPT_BOMB_DAMAGE: if (o->bomb_damage > 0) o->bomb_damage--; break;
+        case OPT_DARKNESS: o->darkness = !o->darkness; break;
+        case OPT_FREE_MARKET: o->free_market = !o->free_market; break;
+        case OPT_SELLING: o->selling = !o->selling; break;
+        case OPT_WINNER: o->win_by_money = !o->win_by_money; break;
+        default: break;
+    }
+}
+
+static void opt_value_plus(GameOptions* o, OptionItem item) {
+    switch (item) {
+        case OPT_CASH: o->cash += 100; if (o->cash > 2650) o->cash = 2650; break;
+        case OPT_TREASURES: if (o->treasures < 75) o->treasures++; break;
+        case OPT_ROUNDS: if (o->rounds < 55) o->rounds++; break;
+        case OPT_TIME: o->round_time_secs += 15; if (o->round_time_secs > 22*60+40) o->round_time_secs = 22*60+40; break;
+        case OPT_PLAYERS: if (o->players < 4) o->players++; break;
+        case OPT_SPEED: if (o->speed > 0) o->speed--; break;
+        case OPT_BOMB_DAMAGE: if (o->bomb_damage < 100) o->bomb_damage++; break;
+        case OPT_DARKNESS: o->darkness = !o->darkness; break;
+        case OPT_FREE_MARKET: o->free_market = !o->free_market; break;
+        case OPT_SELLING: o->selling = !o->selling; break;
+        case OPT_WINNER: o->win_by_money = !o->win_by_money; break;
+        default: break;
+    }
+}
+
+static void render_option_value(App* app, ApplicationContext* ctx, GameOptions* o, OptionItem item) {
+    SDL_Color* pal = app->options_menu.palette;
+    int bar_x = OPT_MENU_X + 142;
+    int bar_y = OPT_MENU_Y + 5 + item * OPT_ITEM_H;
+
+    if (item <= OPT_BOMB_DAMAGE) {
+        SDL_Rect clear = {bar_x, bar_y, 166, 13};
+        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+        SDL_RenderFillRect(ctx->renderer, &clear);
+
+        int bar_w = 0;
+        switch (item) {
+            case OPT_CASH: bar_w = (int)((uint32_t)o->cash * 165 / 2650); break;
+            case OPT_TREASURES: bar_w = (int)((uint32_t)o->treasures * 165 / 75); break;
+            case OPT_ROUNDS: bar_w = (int)((uint32_t)o->rounds * 165 / 55); break;
+            case OPT_TIME: bar_w = (int)((uint32_t)o->round_time_secs * 165 / 1359); break;
+            case OPT_PLAYERS: bar_w = (o->players - 1) * 55; break;
+            case OPT_SPEED: bar_w = (100 - 3 * o->speed) * 165 / 100; break;
+            case OPT_BOMB_DAMAGE: bar_w = (int)((uint32_t)o->bomb_damage * 165 / 100); break;
+            default: break;
+        }
+        SDL_Rect bar = {bar_x, bar_y, bar_w + 1, 13};
+        SDL_SetRenderDrawColor(ctx->renderer, pal[1].r, pal[1].g, pal[1].b, 255);
+        SDL_RenderFillRect(ctx->renderer, &bar);
+
+        char text[32] = "";
+        int tx = OPT_MENU_X + 208, ty = OPT_MENU_Y + 7 + item * OPT_ITEM_H;
+        switch (item) {
+            case OPT_CASH: snprintf(text, sizeof(text), "%u", o->cash); break;
+            case OPT_TREASURES: snprintf(text, sizeof(text), "%u", o->treasures); break;
+            case OPT_ROUNDS: snprintf(text, sizeof(text), "%u", o->rounds); break;
+            case OPT_TIME: snprintf(text, sizeof(text), "%u:%02u min", o->round_time_secs / 60, o->round_time_secs % 60); break;
+            case OPT_PLAYERS: snprintf(text, sizeof(text), " %u", o->players); break;
+            case OPT_SPEED: snprintf(text, sizeof(text), " %d%%", 100 - 3 * o->speed); break;
+            case OPT_BOMB_DAMAGE: snprintf(text, sizeof(text), " %u%%", o->bomb_damage); break;
+            default: break;
+        }
+        if (text[0]) render_text(ctx->renderer, &app->font, tx, ty, pal[8], text);
+    } else if (item >= OPT_DARKNESS && item <= OPT_WINNER) {
+        bool enabled = false;
+        switch (item) {
+            case OPT_DARKNESS: enabled = o->darkness; break;
+            case OPT_FREE_MARKET: enabled = o->free_market; break;
+            case OPT_SELLING: enabled = o->selling; break;
+            case OPT_WINNER: enabled = o->win_by_money; break;
+            default: break;
+        }
+        int on_x = OPT_MENU_X + 185, on_y = bar_y;
+        int off_x = OPT_MENU_X + 251, off_y = bar_y;
+        glyphs_render(&app->glyphs, ctx->renderer, on_x, on_y, enabled ? GLYPH_RADIO_ON : GLYPH_RADIO_OFF);
+        glyphs_render(&app->glyphs, ctx->renderer, off_x, off_y, enabled ? GLYPH_RADIO_OFF : GLYPH_RADIO_ON);
+    }
+}
+
+static void render_options_full(App* app, ApplicationContext* ctx, GameOptions* o, OptionItem selected) {
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    SDL_RenderCopy(ctx->renderer, app->options_menu.texture, NULL, NULL);
+    int cx, cy; opt_cursor_pos(selected, &cx, &cy);
+    glyphs_render(&app->glyphs, ctx->renderer, cx, cy, GLYPH_ARROW_POINTER);
+    for (int i = 0; i < OPT_COUNT; i++) render_option_value(app, ctx, o, (OptionItem)i);
+    SDL_SetRenderTarget(ctx->renderer, NULL);
+}
+
+static void update_opt_pointer(App* app, ApplicationContext* ctx, OptionItem prev, OptionItem cur) {
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    int ox, oy; opt_cursor_pos(prev, &ox, &oy);
+    int w, h; glyphs_dimensions(GLYPH_ARROW_POINTER, &w, &h);
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+    SDL_Rect r = {ox, oy, w, h}; SDL_RenderFillRect(ctx->renderer, &r);
+    int nx, ny; opt_cursor_pos(cur, &nx, &ny);
+    glyphs_render(&app->glyphs, ctx->renderer, nx, ny, GLYPH_ARROW_POINTER);
+    SDL_SetRenderTarget(ctx->renderer, NULL); context_present(ctx);
+}
+
+static void app_run_level_select(App* app, ApplicationContext* ctx);
+
+static void app_run_options(App* app, ApplicationContext* ctx) {
+    GameOptions* o = &app->options;
+    bool running = true;
+    while (running) {
+        OptionItem selected = OPT_MAIN_MENU;
+        render_options_full(app, ctx, o, selected);
+        context_animate(ctx, ANIMATION_FADE_UP, 7);
+
+        bool navigating = true;
+        while (navigating) {
+            SDL_Scancode key = context_wait_key_pressed(ctx);
+            if (key == SDL_SCANCODE_DOWN || key == SDL_SCANCODE_KP_2) {
+                OptionItem prev = selected;
+                selected = (OptionItem)((selected + 1) % OPT_COUNT);
+                update_opt_pointer(app, ctx, prev, selected);
+            } else if (key == SDL_SCANCODE_UP || key == SDL_SCANCODE_KP_8) {
+                OptionItem prev = selected;
+                selected = (OptionItem)((selected + OPT_COUNT - 1) % OPT_COUNT);
+                update_opt_pointer(app, ctx, prev, selected);
+            } else if (key == SDL_SCANCODE_LEFT) {
+                opt_value_minus(o, selected);
+                SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+                render_option_value(app, ctx, o, selected);
+                SDL_SetRenderTarget(ctx->renderer, NULL); context_present(ctx);
+            } else if (key == SDL_SCANCODE_RIGHT) {
+                opt_value_plus(o, selected);
+                SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+                render_option_value(app, ctx, o, selected);
+                SDL_SetRenderTarget(ctx->renderer, NULL); context_present(ctx);
+            } else if (key == SDL_SCANCODE_RETURN || key == SDL_SCANCODE_KP_ENTER) {
+                if (selected == OPT_MAIN_MENU) navigating = false;
+                else if (selected == OPT_LOAD_LEVELS) {
+                    navigating = false;
+                }
+            } else if (key == SDL_SCANCODE_ESCAPE) {
+                navigating = false;
+                selected = OPT_MAIN_MENU;
+            } else if (key == SDL_SCANCODE_D) {
+                o->cash = 750; o->treasures = 45; o->rounds = 15;
+                o->round_time_secs = 420; o->players = 2; o->speed = 8;
+                o->bomb_damage = 100; o->darkness = false; o->free_market = false;
+                o->selling = false; o->win_by_money = true;
+                SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+                for (int i = 0; i < OPT_COUNT; i++) render_option_value(app, ctx, o, (OptionItem)i);
+                SDL_SetRenderTarget(ctx->renderer, NULL); context_present(ctx);
+            }
+        }
+        context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+        if (selected == OPT_LOAD_LEVELS) {
+            app_run_level_select(app, ctx);
+        } else {
+            running = false;
+        }
+    }
+}
+
+// ==================== LEVEL SELECTION ====================
+
+static void render_level_grid(App* app, ApplicationContext* ctx, int cursor, int* picks, int pick_count) {
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    SDL_RenderCopy(ctx->renderer, app->level_select.texture, NULL, NULL);
+    SDL_Color* pal = app->level_select.palette;
+
+    char count_str[32];
+    snprintf(count_str, sizeof(count_str), "%d/%d", pick_count, app->options.rounds);
+    render_text(ctx->renderer, &app->font, 15, 15, pal[7], count_str);
+
+    int total = app->level_count + 1; // +1 for "Random" at position 0
+    for (int i = 0; i < total; i++) {
+        int col = i % 8, row = i / 8;
+        int x = col * 80, y = row * 10 + 74;
+
+        bool is_picked = false;
+        for (int p = 0; p < pick_count; p++) { if (picks[p] == i) { is_picked = true; break; } }
+        bool is_cursor = (i == cursor);
+
+        int color_idx;
+        if (i == 0) {
+            // Random: cursor state doesn't affect color
+            color_idx = is_picked ? 5 : 4;
+        } else {
+            if (is_cursor) color_idx = is_picked ? 6 : 0;
+            else color_idx = is_picked ? 7 : 1;
+        }
+
+        const char* name = (i == 0) ? "Random" : app->level_names[i - 1];
+        char short_name[12]; memset(short_name, 0, sizeof(short_name));
+        strncpy(short_name, name, 8);
+        // Remove extension
+        char* dot = strrchr(short_name, '.');
+        if (dot) *dot = '\0';
+
+        render_text(ctx->renderer, &app->font, x + 4, y, pal[color_idx], short_name);
+    }
+
+    // Level preview
+    if (cursor > 0 && cursor <= app->level_count) {
+        uint8_t* map = app->level_data[cursor - 1];
+        SDL_Surface* prev = SDL_CreateRGBSurfaceWithFormat(0, 64, 45, 32, SDL_PIXELFORMAT_RGBA32);
+        uint32_t* pixels = (uint32_t*)prev->pixels;
+        for (int py = 0; py < 45; py++) {
+            for (int px = 0; px < 64; px++) {
+                uint8_t val = map[py * 66 + px];
+                int c = 12;
+                if (val == 0x30 || val == 0x66 || val == 0xAF) c = 14;
+                else if (val == 0x31) c = 8;
+                else if ((val >= 0x37 && val <= 0x46) || val == 0x42 || val == 0x70 || val == 0x71) c = 9;
+                else if (val == 0x73 || (val >= 0x8F && val <= 0x9A) || val == 0x6D || val == 0x79 || val == 0xB3) c = 5;
+                SDL_Color pc = pal[c];
+                pixels[py * 64 + px] = SDL_MapRGBA(prev->format, pc.r, pc.g, pc.b, 255);
+            }
+        }
+        SDL_Texture* tex = SDL_CreateTextureFromSurface(ctx->renderer, prev);
+        SDL_Rect tgt = {330, 7, 64, 45};
+        SDL_RenderCopy(ctx->renderer, tex, NULL, &tgt);
+        SDL_DestroyTexture(tex);
+        SDL_FreeSurface(prev);
+    }
+
+    SDL_SetRenderTarget(ctx->renderer, NULL); context_present(ctx);
+}
+
+static void app_run_level_select(App* app, ApplicationContext* ctx) {
+    int cursor = 0;
+    int picks[128]; int pick_count = 0;
+    int max_picks = app->options.rounds;
+    int total = app->level_count + 1;
+
+    render_level_grid(app, ctx, cursor, picks, pick_count);
+    context_animate(ctx, ANIMATION_FADE_UP, 7);
+
+    bool running = true;
+    while (running) {
+        SDL_Scancode key = context_wait_key_pressed(ctx);
+        if (key == SDL_SCANCODE_LEFT || key == SDL_SCANCODE_KP_4) {
+            cursor = (cursor + total - 1) % total;
+        } else if (key == SDL_SCANCODE_RIGHT || key == SDL_SCANCODE_KP_6) {
+            cursor = (cursor + 1) % total;
+        } else if (key == SDL_SCANCODE_UP || key == SDL_SCANCODE_KP_8) {
+            cursor = (cursor - 8 + total) % total;
+        } else if (key == SDL_SCANCODE_DOWN || key == SDL_SCANCODE_KP_2) {
+            cursor = (cursor + 8) % total;
+        } else if (key == SDL_SCANCODE_RETURN || key == SDL_SCANCODE_KP_ENTER) {
+            if (pick_count < max_picks && pick_count < 128) {
+                picks[pick_count++] = cursor;
+            }
+        } else if (key == SDL_SCANCODE_F1) {
+            // Fill remaining with random levels
+            while (pick_count < max_picks && pick_count < 128) {
+                picks[pick_count++] = rand() % total;
+            }
+        } else if (key == SDL_SCANCODE_ESCAPE) {
+            running = false;
+        }
+        render_level_grid(app, ctx, cursor, picks, pick_count);
+    }
+    context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+
+    // Store selected levels
+    app->selected_level_count = pick_count;
+    for (int i = 0; i < pick_count; i++) app->selected_levels[i] = picks[i];
+}
+
 static const uint32_t EQUIPMENT_PRICES[] = {
     1, 3, 10, 650, 15, 65, 300, 25, 500, 80, 90, 35, 145, 15, 80, 120, 50, 400, 1100, 1600, 70, 400, 50, 80, 800, 95, 575
 };
@@ -338,11 +665,17 @@ static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[
         render_text(ctx->renderer, &app->font, rx + 12, ry + 36, yellow, "READY");
     }
     
-    char rounds_str[32]; snprintf(rounds_str, sizeof(rounds_str), "%d", app->total_rounds - app->current_round);
+    char rounds_str[32]; snprintf(rounds_str, sizeof(rounds_str), "%d", app->options.rounds - app->current_round);
     render_text(ctx->renderer, &app->font, 306, 120, white, rounds_str);
 
     if (app->level_count > 0) {
-        int lvl_idx = app->current_round % app->level_count;
+        int lvl_idx;
+        if (app->selected_level_count > 0 && app->current_round < app->selected_level_count) {
+            int sel = app->selected_levels[app->current_round];
+            lvl_idx = (sel == 0) ? (app->current_round % app->level_count) : (sel - 1);
+        } else {
+            lvl_idx = app->current_round % app->level_count;
+        }
         uint8_t* map = app->level_data[lvl_idx];
         SDL_Surface* prev = SDL_CreateRGBSurfaceWithFormat(0, 64, 45, 32, SDL_PIXELFORMAT_RGBA32);
         uint32_t* pixels = (uint32_t*)prev->pixels;
@@ -369,6 +702,60 @@ static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[
     SDL_SetRenderTarget(ctx->renderer, NULL); context_present(ctx);
 }
 
+// ==================== VICTORY SCREEN ====================
+
+typedef enum { PLAYER_WIN, PLAYER_LOSE, PLAYER_DRAW } PlayerResult;
+
+static PlayerResult compute_score(App* app, int player_idx) {
+    uint32_t score;
+    if (app->options.win_by_money) score = app->player_cash[player_idx];
+    else score = app->player_rounds_won[player_idx];
+
+    int bested_by = 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (i == player_idx) continue;
+        uint32_t other = app->options.win_by_money ? app->player_cash[i] : app->player_rounds_won[i];
+        if (other > score) bested_by++;
+    }
+    if (bested_by == 0) return PLAYER_WIN;
+    if (bested_by == MAX_PLAYERS - 1) return PLAYER_LOSE;
+    return PLAYER_DRAW;
+}
+
+static void app_run_victory_screen(App* app, ApplicationContext* ctx) {
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    SDL_RenderCopy(ctx->renderer, app->final_screen.texture, NULL, NULL);
+    SDL_Color color = app->final_screen.palette[1];
+
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        PlayerResult result = compute_score(app, i);
+        SDL_Texture* avatar = NULL;
+        switch (result) {
+            case PLAYER_WIN: avatar = app->avatar_win[i].texture; break;
+            case PLAYER_LOSE: avatar = app->avatar_lose[i].texture; break;
+            case PLAYER_DRAW: avatar = app->avatar_draw[i].texture; break;
+        }
+        if (avatar) {
+            SDL_Rect dest = {32 + 150 * i, 95, 132, 218};
+            SDL_RenderCopy(ctx->renderer, avatar, NULL, &dest);
+        }
+
+        render_text(ctx->renderer, &app->font, 36 + 150 * i, 330, color, app->player_name[i]);
+
+        char cash_str[32]; snprintf(cash_str, sizeof(cash_str), "%u", app->player_cash[i]);
+        render_text(ctx->renderer, &app->font, 36 + 150 * i, 346, color, cash_str);
+
+        char wins_str[32]; snprintf(wins_str, sizeof(wins_str), "%u", app->player_rounds_won[i]);
+        render_text(ctx->renderer, &app->font, 36 + 150 * i, 362, color, wins_str);
+    }
+
+    SDL_SetRenderTarget(ctx->renderer, NULL);
+    context_animate(ctx, ANIMATION_FADE_UP, 7);
+    if (app->sound_applause) context_play_sample_freq(app->sound_applause, 11000);
+    context_wait_key_pressed(ctx);
+    context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+}
+
 static void app_run_shop(App* app, ApplicationContext* ctx) {
     context_play_music_at(ctx, "OEKU.S3M", 83);
     int selected[2] = {0, 0}; bool ready[2] = {false, false};
@@ -387,6 +774,8 @@ static void app_run_shop(App* app, ApplicationContext* ctx) {
                 if (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_START) start_pressed = true;
                 if (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER)) start_pressed = true;
 
+                if (ready[p]) continue;
+
                 if (start_pressed) {
                     selected[p] = EQUIP_TOTAL;
                     ready[p] = true;
@@ -400,13 +789,13 @@ static void app_run_shop(App* app, ApplicationContext* ctx) {
                         case ACT_RIGHT: selected[p] = (selected[p] + 1) % (EQUIP_TOTAL + 1); break;
                         case ACT_ACTION:
                             if (selected[p] == EQUIP_TOTAL) {
-                                ready[p] = !ready[p];
+                                ready[p] = true;
                             } else if (app->player_cash[p] >= EQUIPMENT_PRICES[selected[p]]) {
                                 app->player_cash[p] -= EQUIPMENT_PRICES[selected[p]];
                                 app->player_inventory[p][selected[p]]++;
                             }
                             break;
-                        case ACT_STOP: 
+                        case ACT_STOP:
                             if (selected[p] != EQUIP_TOTAL && app->player_inventory[p][selected[p]] > 0) {
                                 app->player_inventory[p][selected[p]]--;
                                 app->player_cash[p] += EQUIPMENT_PRICES[selected[p]] / 2;
@@ -420,16 +809,51 @@ static void app_run_shop(App* app, ApplicationContext* ctx) {
 
         if (ready[0] && ready[1]) {
             if (app->level_count > 0) {
+                // Pick level: use selected levels list if available, else sequential
+                int lvl_idx;
+                if (app->selected_level_count > 0 && app->current_round < app->selected_level_count) {
+                    int sel = app->selected_levels[app->current_round];
+                    if (sel == 0) lvl_idx = rand() % app->level_count; // "Random"
+                    else lvl_idx = sel - 1;
+                } else {
+                    lvl_idx = app->current_round % app->level_count;
+                }
                 context_animate(ctx, ANIMATION_FADE_DOWN, 7);
-                game_run(app, ctx, app->level_data[app->current_round % app->level_count]);
-                context_linger_music(ctx, 1500);
+                RoundResult result = game_run(app, ctx, app->level_data[lvl_idx]);
+
+                // Award round wins to surviving players (only if not everyone survived)
+                int alive = 0;
+                for (int p = 0; p < MAX_PLAYERS; p++) if (result.player_survived[p]) alive++;
+                if (alive > 0 && alive < MAX_PLAYERS) {
+                    for (int p = 0; p < MAX_PLAYERS; p++) {
+                        if (result.player_survived[p]) app->player_rounds_won[p]++;
+                    }
+                }
+                // Give minimum cash if too low
+                for (int p = 0; p < MAX_PLAYERS; p++) {
+                    if (app->player_cash[p] < 100) app->player_cash[p] += 150;
+                }
+
+                context_linger_music_start(ctx);
+                context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+                context_linger_music_end(ctx);
                 app->current_round++;
                 ready[0] = ready[1] = false;
-                if (app->current_round >= app->total_rounds) running = false;
-                else context_play_music_at(ctx, "OEKU.S3M", 83);
+                if (app->current_round >= app->options.rounds) running = false;
+                else {
+                    context_play_music_at(ctx, "OEKU.S3M", 83);
+                    render_shop_ui(app, ctx, selected);
+                    context_animate(ctx, ANIMATION_FADE_UP, 7);
+                }
             }
         }
         SDL_Delay(16);
+    }
+
+    // Show victory screen if rounds were completed
+    if (app->current_round >= app->options.rounds) {
+        context_stop_music(ctx);
+        app_run_victory_screen(app, ctx);
     }
 }
 
@@ -472,8 +896,13 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
         if (selected == MENU_QUIT) break;
         else if (selected == MENU_NEW_GAME) {
             app->current_round = 0;
+            for (int p = 0; p < MAX_PLAYERS; ++p) {
+                app->player_cash[p] = app->options.cash;
+                app->player_rounds_won[p] = 0;
+            }
             app_run_shop(app, ctx);
         }
+        else if (selected == MENU_OPTIONS) app_run_options(app, ctx);
         else if (selected == MENU_INFO) app_run_info_menu(app, ctx);
     }
     context_stop_music(ctx);

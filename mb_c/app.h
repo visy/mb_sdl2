@@ -40,6 +40,20 @@ typedef enum {
 #define MAX_PLAYERS 2
 
 typedef struct {
+    uint16_t cash;
+    uint8_t treasures;
+    uint16_t rounds;
+    uint16_t round_time_secs;
+    uint8_t players;
+    uint16_t speed;
+    uint8_t bomb_damage;
+    bool darkness;
+    bool free_market;
+    bool selling;
+    bool win_by_money;
+} GameOptions;
+
+typedef struct {
     TexturePalette title;
     TexturePalette main_menu;
     TexturePalette sika; // Glyphs
@@ -48,6 +62,12 @@ typedef struct {
     
     TexturePalette info[4];
     TexturePalette codes;
+    TexturePalette options_menu;
+    TexturePalette level_select;
+    TexturePalette final_screen;
+    TexturePalette avatar_win[MAX_PLAYERS];
+    TexturePalette avatar_lose[MAX_PLAYERS];
+    TexturePalette avatar_draw[MAX_PLAYERS];
     
     Glyphs glyphs;
     Font font;
@@ -65,17 +85,22 @@ typedef struct {
     Mix_Chunk* sound_explos5;
     Mix_Chunk* sound_pikkupom;
     Mix_Chunk* sound_aargh;
+    Mix_Chunk* sound_applause;
 
     char level_names[128][32];
     uint8_t* level_data[128];
     int level_count;
 
     uint32_t player_cash[MAX_PLAYERS];
+    uint32_t player_rounds_won[MAX_PLAYERS];
     int player_inventory[MAX_PLAYERS][EQUIP_TOTAL];
     char player_name[MAX_PLAYERS][16];
+    int selected_levels[128];
+    int selected_level_count;
+
     InputConfig input_config;
+    GameOptions options;
     int current_round;
-    int total_rounds;
 } App;
 
 bool app_init(App* app, ApplicationContext* ctx);

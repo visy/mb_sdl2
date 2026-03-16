@@ -39,41 +39,43 @@ void glyphs_init(Glyphs* glyphs, SDL_Texture* texture) {
 static SDL_Rect get_glyph_rect(GlyphType type) {
     SDL_Rect r = {0, 0, 10, 10};
 
-    if (type >= GLYPH_PLAYER_DIG_START) {
-        int base_x, base_y;
-        int p_idx;
-        if (type >= GLYPH_PLAYER_DIG_START + 4000) {
-            // Player 2 digging
-            p_idx = type - (GLYPH_PLAYER_DIG_START + 4000);
-            base_x = 0; base_y = 200;
-        } else {
-            // Player 1 digging
-            p_idx = type - GLYPH_PLAYER_DIG_START;
-            base_x = 160; base_y = 200;
-        }
+    if (type >= GLYPH_PLAYER_DIG_START + 4000) {
+        // Player 2 digging (>= 6000)
+        int p_idx = type - (GLYPH_PLAYER_DIG_START + 4000);
         int dir = p_idx % 4;
         int anim = (p_idx / 4) % 4;
-        r.x = base_x + (dir * 40) + (anim * 10);
-        r.y = base_y;
+        r.x = 0 + (dir * 40) + (anim * 10);
+        r.y = 200;
+        return r;
+    }
+
+    if (type >= GLYPH_PLAYER_START + 4000) {
+        // Player 2 walking (>= 5000)
+        int p_idx = type - (GLYPH_PLAYER_START + 4000);
+        int dir = p_idx % 4;
+        int anim = (p_idx / 4) % 4;
+        r.x = 160 + (dir * 40) + (anim * 10);
+        r.y = 0;
+        return r;
+    }
+
+    if (type >= GLYPH_PLAYER_DIG_START) {
+        // Player 1 digging (>= 2000)
+        int p_idx = type - GLYPH_PLAYER_DIG_START;
+        int dir = p_idx % 4;
+        int anim = (p_idx / 4) % 4;
+        r.x = 160 + (dir * 40) + (anim * 10);
+        r.y = 200;
         return r;
     }
 
     if (type >= GLYPH_PLAYER_START) {
-        int base_x, base_y;
-        int p_idx;
-        if (type >= GLYPH_PLAYER_START + 4000) {
-            // Player 2 walking
-            p_idx = type - (GLYPH_PLAYER_START + 4000);
-            base_x = 160; base_y = 0;
-        } else {
-            // Player 1 walking
-            p_idx = type - GLYPH_PLAYER_START;
-            base_x = 160; base_y = 10;
-        }
+        // Player 1 walking (>= 1000)
+        int p_idx = type - GLYPH_PLAYER_START;
         int dir = p_idx % 4;
         int anim = (p_idx / 4) % 4;
-        r.x = base_x + (dir * 40) + (anim * 10);
-        r.y = base_y;
+        r.x = 160 + (dir * 40) + (anim * 10);
+        r.y = 10;
         return r;
     }
 
@@ -106,6 +108,12 @@ static SDL_Rect get_glyph_rect(GlyphType type) {
             break;
         case GLYPH_ARROW_POINTER:
             r.x = 205; r.y = 99; r.w = 27; r.h = 11;
+            break;
+        case GLYPH_RADIO_OFF:
+            r.x = 90; r.y = 40; r.w = 15; r.h = 13;
+            break;
+        case GLYPH_RADIO_ON:
+            r.x = 90; r.y = 53; r.w = 15; r.h = 13;
             break;
         case GLYPH_SHOP_SLOT_UNSELECTED:
             r.x = 64; r.y = 92; r.w = 64; r.h = 48;

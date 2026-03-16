@@ -208,13 +208,14 @@ bool context_play_music_at(ApplicationContext* ctx, const char* filename, int or
     return false;
 }
 
-void context_linger_music(ApplicationContext* ctx, int ms) {
+void context_linger_music_start(ApplicationContext* ctx) {
     if (!ctx->music || !ctx->music_loaded) return;
-    // Stop the sequencer from advancing to new rows, but keep mixing
-    // current channel samples so notes sustain and decay naturally
     ctx->music->rt.sample_per_frame = 0x7FFFFFFF;
     ctx->music->rt.sample_ctr = 0x7FFFFFFF;
-    SDL_Delay(ms);
+}
+
+void context_linger_music_end(ApplicationContext* ctx) {
+    if (!ctx->music || !ctx->music_loaded) return;
     s3m_stop(ctx->music);
 }
 
