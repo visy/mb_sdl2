@@ -183,8 +183,11 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
 
     SDL_Color yellow = {255, 255, 0, 255}, white = {255, 255, 255, 255}, cyan = {0, 255, 255, 255};
 
+    static const int PLAYER_X[] = {12, 174, 337, 500};
+    static const int HEALTH_BAR_LEFT[] = {142, 304, 467, 630};
+
     for (int p = 0; p < world->num_players; ++p) {
-        int pos_x = p * 160 + 12; 
+        int pos_x = PLAYER_X[p];
         int wep = world->actors[p].selected_weapon;
         glyphs_render(&app->glyphs, ctx->renderer, pos_x, 0, (GlyphType)(GLYPH_EQUIPMENT_START + wep));
         
@@ -209,7 +212,7 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
 
         int health_bars = world->actors[p].health <= 0 ? 0 : (world->actors[p].health * 50 + 1) / (2 * world->actors[p].max_health) + 1;
         if (health_bars > 26) health_bars = 26;
-        int left = p * 160 + 142;
+        int left = HEALTH_BAR_LEFT[p];
         SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
         if (health_bars < 26) {
             SDL_Rect r_empty = {left, 2, 8, 26 - health_bars};

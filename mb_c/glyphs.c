@@ -40,22 +40,38 @@ static SDL_Rect get_glyph_rect(GlyphType type) {
     SDL_Rect r = {0, 0, 10, 10};
 
     if (type >= GLYPH_PLAYER_DIG_START) {
-        int p_idx = type - GLYPH_PLAYER_DIG_START;
+        int base_x, base_y;
+        int p_idx;
+        if (type >= GLYPH_PLAYER_DIG_START + 4000) {
+            // Player 2 digging
+            p_idx = type - (GLYPH_PLAYER_DIG_START + 4000);
+            base_x = 0; base_y = 200;
+        } else {
+            // Player 1 digging
+            p_idx = type - GLYPH_PLAYER_DIG_START;
+            base_x = 160; base_y = 200;
+        }
         int dir = p_idx % 4;
         int anim = (p_idx / 4) % 4;
-        int base_x = 160;
-        int base_y = 200;
         r.x = base_x + (dir * 40) + (anim * 10);
         r.y = base_y;
         return r;
     }
 
     if (type >= GLYPH_PLAYER_START) {
-        int p_idx = type - GLYPH_PLAYER_START;
+        int base_x, base_y;
+        int p_idx;
+        if (type >= GLYPH_PLAYER_START + 4000) {
+            // Player 2 walking
+            p_idx = type - (GLYPH_PLAYER_START + 4000);
+            base_x = 160; base_y = 0;
+        } else {
+            // Player 1 walking
+            p_idx = type - GLYPH_PLAYER_START;
+            base_x = 160; base_y = 10;
+        }
         int dir = p_idx % 4;
         int anim = (p_idx / 4) % 4;
-        int base_x = 160;
-        int base_y = 10;
         r.x = base_x + (dir * 40) + (anim * 10);
         r.y = base_y;
         return r;

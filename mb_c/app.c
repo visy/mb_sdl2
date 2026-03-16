@@ -297,26 +297,27 @@ static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[
     SDL_Color yellow = {255, 255, 0, 255}, white = {255, 255, 255, 255}, red = {255, 0, 0, 255};
     
     for (int p_idx = 0; p_idx < 2; ++p_idx) {
-        int offset_x = p_idx * 320;
+        int stats_x = p_idx == 0 ? 0 : 420;
+        int items_x = p_idx * 320;
 
         char cash_str[32]; snprintf(cash_str, sizeof(cash_str), "%u", app->player_cash[p_idx]);
-        SDL_Rect rect_cash = {35 + offset_x, 44, 56, 8}; SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255); SDL_RenderFillRect(ctx->renderer, &rect_cash);
-        render_text(ctx->renderer, &app->font, 35 + offset_x, 44, yellow, cash_str);
-        
-        SDL_Rect rect_name = {35 + offset_x, 16, 56, 8}; SDL_RenderFillRect(ctx->renderer, &rect_name);
-        render_text(ctx->renderer, &app->font, 35 + offset_x, 16, white, app->player_name[p_idx]);
-        
-        SDL_Rect rect_power = {35 + offset_x, 30, 56, 8}; SDL_RenderFillRect(ctx->renderer, &rect_power);
-        render_text(ctx->renderer, &app->font, 35 + offset_x, 30, red, "11");
-        
+        SDL_Rect rect_cash = {35 + stats_x, 44, 56, 8}; SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255); SDL_RenderFillRect(ctx->renderer, &rect_cash);
+        render_text(ctx->renderer, &app->font, 35 + stats_x, 44, yellow, cash_str);
+
+        SDL_Rect rect_name = {35 + stats_x, 16, 56, 8}; SDL_RenderFillRect(ctx->renderer, &rect_name);
+        render_text(ctx->renderer, &app->font, 35 + stats_x, 16, white, app->player_name[p_idx]);
+
+        SDL_Rect rect_power = {35 + stats_x, 30, 56, 8}; SDL_RenderFillRect(ctx->renderer, &rect_power);
+        render_text(ctx->renderer, &app->font, 35 + stats_x, 30, red, "11");
+
         if (selected_item[p_idx] < EQUIP_TOTAL) {
             char count_str[16]; snprintf(count_str, sizeof(count_str), "%u", app->player_inventory[p_idx][selected_item[p_idx]]);
-            SDL_Rect rect_count = {35 + offset_x, 58, 56, 8}; SDL_RenderFillRect(ctx->renderer, &rect_count);
-            render_text(ctx->renderer, &app->font, 35 + offset_x, 58, white, count_str);
+            SDL_Rect rect_count = {35 + stats_x, 58, 56, 8}; SDL_RenderFillRect(ctx->renderer, &rect_count);
+            render_text(ctx->renderer, &app->font, 35 + stats_x, 58, white, count_str);
         }
 
         for (int i = 0; i < EQUIP_TOTAL; ++i) {
-            int col = i % 4, row = i / 4, x = col * 64 + 32 + offset_x, y = row * 48 + 96;
+            int col = i % 4, row = i / 4, x = col * 64 + 32 + items_x, y = row * 48 + 96;
             glyphs_render(&app->glyphs, ctx->renderer, x, y, (i == selected_item[p_idx]) ? GLYPH_SHOP_SLOT_SELECTED : GLYPH_SHOP_SLOT_UNSELECTED);
             glyphs_render(&app->glyphs, ctx->renderer, x + 17, y + 3, (GlyphType)(GLYPH_EQUIPMENT_START + i));
             char price_str[16]; snprintf(price_str, sizeof(price_str), "%u$", EQUIPMENT_PRICES[i]);
@@ -331,7 +332,7 @@ static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[
                 }
             }
         }
-        int rx = (EQUIP_TOTAL%4)*64+32 + offset_x, ry = (EQUIP_TOTAL/4)*48+96;
+        int rx = (EQUIP_TOTAL%4)*64+32 + items_x, ry = (EQUIP_TOTAL/4)*48+96;
         glyphs_render(&app->glyphs, ctx->renderer, rx, ry, (selected_item[p_idx] == EQUIP_TOTAL) ? GLYPH_SHOP_SLOT_SELECTED : GLYPH_SHOP_SLOT_UNSELECTED);
         glyphs_render(&app->glyphs, ctx->renderer, rx + 17, ry + 3, GLYPH_READY);
         render_text(ctx->renderer, &app->font, rx + 12, ry + 36, yellow, "READY");
@@ -421,6 +422,7 @@ static void app_run_shop(App* app, ApplicationContext* ctx) {
             if (app->level_count > 0) {
                 context_animate(ctx, ANIMATION_FADE_DOWN, 7);
                 game_run(app, ctx, app->level_data[app->current_round % app->level_count]);
+                context_linger_music(ctx, 1500);
                 app->current_round++;
                 ready[0] = ready[1] = false;
                 if (app->current_round >= app->total_rounds) running = false;
@@ -444,12 +446,14 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
             context_play_music(ctx, "HUIPPE.S3M");
         }
         render_main_menu(app, ctx, selected); context_animate(ctx, ANIMATION_FADE_UP, 7);
-        bool navigating = true, entering_debug = false;
+        { SDL_Event flush; while (SDL_PollEvent(&flush)) { if (flush.type == SDL_QUIT) { selected = MENU_QUIT; running = false; } } }
+        bool navigating = running, entering_debug = false;
         void (*debug_func)(App*, ApplicationContext*) = NULL;
         while (navigating) {
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
-                if (e.type == SDL_QUIT) { navigating = false; running = false; break; }
+                if (e.type == SDL_QUIT) { selected = MENU_QUIT; navigating = false; running = false; break; }
+                if (e.type == SDL_KEYDOWN && e.key.repeat) continue;
                 ActionType act = input_map_event(&e, 0, &app->input_config);
                 if (act == ACT_UP) { SelectedMenu p = menu_prev(selected); update_shovel(app, ctx, selected, p); selected = p; }
                 else if (act == ACT_DOWN) { SelectedMenu n = menu_next(selected); update_shovel(app, ctx, selected, n); selected = n; }
