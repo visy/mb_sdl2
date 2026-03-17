@@ -37,7 +37,7 @@ typedef enum {
     EQUIP_TOTAL
 } Equipment;
 
-#define MAX_PLAYERS 2
+#define MAX_PLAYERS 4
 
 typedef struct {
     uint16_t cash;
@@ -68,6 +68,9 @@ typedef struct {
     TexturePalette avatar_win[MAX_PLAYERS];
     TexturePalette avatar_lose[MAX_PLAYERS];
     TexturePalette avatar_draw[MAX_PLAYERS];
+    TexturePalette game_over;
+    TexturePalette congratu;
+    TexturePalette halloffa;
     
     Glyphs glyphs;
     Font font;
@@ -97,6 +100,10 @@ typedef struct {
     char player_name[MAX_PLAYERS][16];
     int selected_levels[128];
     int selected_level_count;
+
+    uint8_t* campaign_levels[15];
+    int campaign_level_count;
+    int player_lives;
 
     InputConfig input_config;
     GameOptions options;

@@ -8,9 +8,11 @@
 
 #ifdef _WIN32
 #define STRICMP _stricmp
+#define STRNICMP _strnicmp
 #else
 #include <strings.h>
 #define STRICMP strcasecmp
+#define STRNICMP strncasecmp
 #endif
 
 typedef enum {
@@ -58,6 +60,7 @@ static void load_registered(const char* game_dir, char* out_buf, size_t max_len)
 bool app_init(App* app, ApplicationContext* ctx) {
     memset(app, 0, sizeof(App));
     srand((unsigned int)time(NULL));
+    memset(app, 0, sizeof(App));
 
     if (!context_load_spy(ctx, "TITLEBE.SPY", &app->title)) return false;
     if (!context_load_spy(ctx, "MAIN3.SPY", &app->main_menu)) return false;
@@ -74,11 +77,14 @@ bool app_init(App* app, ApplicationContext* ctx) {
     if (!context_load_spy(ctx, "OPTIONS5.SPY", &app->options_menu)) return false;
     if (!context_load_spy(ctx, "LEVSELEC.SPY", &app->level_select)) return false;
     if (!context_load_spy(ctx, "FINAL.SPY", &app->final_screen)) return false;
+    context_load_spy(ctx, "GAMEOVER.SPY", &app->game_over);
+    context_load_spy(ctx, "CONGRATU.SPY", &app->congratu);
+    context_load_spy(ctx, "HALLOFFA.SPY", &app->halloffa);
 
     // Player avatars (PPM format)
-    static const char* avatar_win_files[] = {"SINVOIT.PPM", "PUNVOIT.PPM"};
-    static const char* avatar_lose_files[] = {"SINLOSE.PPM", "PUNLOSE.PPM"};
-    static const char* avatar_draw_files[] = {"SINDRAW.PPM", "PUNDRAW.PPM"};
+    static const char* avatar_win_files[] = {"SINVOIT.PPM", "PUNVOIT.PPM", "VIHVOIT.PPM", "KELVOIT.PPM"};
+    static const char* avatar_lose_files[] = {"SINLOSE.PPM", "PUNLOSE.PPM", "VIHLOSE.PPM", "KELLOSE.PPM"};
+    static const char* avatar_draw_files[] = {"SINDRAW.PPM", "PUNDRAW.PPM", "VIHDRAW.PPM", "KELDRAW.PPM"};
     for (int i = 0; i < MAX_PLAYERS; i++) {
         context_load_ppm(ctx, avatar_win_files[i], &app->avatar_win[i]);
         context_load_ppm(ctx, avatar_lose_files[i], &app->avatar_lose[i]);
@@ -106,16 +112,14 @@ bool app_init(App* app, ApplicationContext* ctx) {
     input_print(&app->input_config);
 
     for (int p = 0; p < MAX_PLAYERS; ++p) {
-        app->player_cash[p] = 500;
-        app->player_inventory[p][EQUIP_SMALL_BOMB] = 5;
-        app->player_inventory[p][EQUIP_BIG_BOMB] = 5;
-        app->player_inventory[p][EQUIP_DYNAMITE] = 5;
-        app->player_inventory[p][EQUIP_ATOMIC_BOMB] = 2;
         snprintf(app->player_name[p], 16, "Plr %d", p + 1);
     }
 
     app->current_round = 0;
     app->selected_level_count = 0;
+    app->campaign_level_count = 0;
+    app->player_lives = 3;
+    memset(app->campaign_levels, 0, sizeof(app->campaign_levels));
 
     app->options.cash = 750;
     app->options.treasures = 45;
@@ -163,7 +167,8 @@ bool app_init(App* app, ApplicationContext* ctx) {
         struct dirent* dir;
         while ((dir = readdir(d)) != NULL) {
             char* ext = strrchr(dir->d_name, '.');
-            if (ext && (STRICMP(ext, ".MNL") == 0 || STRICMP(ext, ".MNE") == 0)) {
+            if (ext && (STRICMP(ext, ".MNL") == 0 || STRICMP(ext, ".MNE") == 0)
+                && STRNICMP(dir->d_name, "LEVEL", 5) != 0) {
                 if (app->level_count < 128) {
                     char path[MAX_PATH];
 #ifdef _WIN32
@@ -192,6 +197,32 @@ bool app_init(App* app, ApplicationContext* ctx) {
         }
         closedir(d);
     }
+    // Load campaign levels (LEVEL0.MNL - LEVEL14.MNL)
+    for (int i = 0; i < 15; i++) {
+        char fname[32];
+        snprintf(fname, sizeof(fname), "LEVEL%d.MNL", i);
+        char path[MAX_PATH];
+#ifdef _WIN32
+        snprintf(path, sizeof(path), "%s\\%s", ctx->game_dir, fname);
+#else
+        snprintf(path, sizeof(path), "%s/%s", ctx->game_dir, fname);
+#endif
+        FILE* lf = fopen(path, "rb");
+        if (lf) {
+            fseek(lf, 0, SEEK_END);
+            long size = ftell(lf);
+            fseek(lf, 0, SEEK_SET);
+            if (size >= 2970) {
+                app->campaign_levels[i] = malloc(size);
+                if (app->campaign_levels[i]) {
+                    fread(app->campaign_levels[i], 1, size, lf);
+                    app->campaign_level_count = i + 1;
+                }
+            }
+            fclose(lf);
+        }
+    }
+
     return true;
 }
 
@@ -212,9 +243,13 @@ void app_destroy(App* app) {
         destroy_texture_palette(&app->avatar_lose[i]);
         destroy_texture_palette(&app->avatar_draw[i]);
     }
+    destroy_texture_palette(&app->game_over);
+    destroy_texture_palette(&app->congratu);
+    destroy_texture_palette(&app->halloffa);
     destroy_font(&app->font);
     for (int i = 0; i < app->sound_count; ++i) if (app->sounds[i]) Mix_FreeChunk(app->sounds[i]);
     for (int i = 0; i < app->level_count; ++i) if (app->level_data[i]) free(app->level_data[i]);
+    for (int i = 0; i < 15; ++i) if (app->campaign_levels[i]) free(app->campaign_levels[i]);
 }
 
 static void render_main_menu(App* app, ApplicationContext* ctx, SelectedMenu selected) {
@@ -462,46 +497,60 @@ static void app_run_options(App* app, ApplicationContext* ctx) {
 
         bool navigating = true;
         while (navigating) {
-            SDL_Scancode key = context_wait_key_pressed(ctx);
-            if (key == SDL_SCANCODE_DOWN || key == SDL_SCANCODE_KP_2) {
-                OptionItem prev = selected;
-                selected = (OptionItem)((selected + 1) % OPT_COUNT);
-                update_opt_pointer(app, ctx, prev, selected);
-            } else if (key == SDL_SCANCODE_UP || key == SDL_SCANCODE_KP_8) {
-                OptionItem prev = selected;
-                selected = (OptionItem)((selected + OPT_COUNT - 1) % OPT_COUNT);
-                update_opt_pointer(app, ctx, prev, selected);
-            } else if (key == SDL_SCANCODE_LEFT) {
-                opt_value_minus(o, selected);
-                SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
-                render_option_value(app, ctx, o, selected);
-                SDL_SetRenderTarget(ctx->renderer, NULL); context_present(ctx);
-            } else if (key == SDL_SCANCODE_RIGHT) {
-                opt_value_plus(o, selected);
-                SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
-                render_option_value(app, ctx, o, selected);
-                SDL_SetRenderTarget(ctx->renderer, NULL); context_present(ctx);
-            } else if (key == SDL_SCANCODE_RETURN || key == SDL_SCANCODE_KP_ENTER) {
-                if (selected == OPT_MAIN_MENU) navigating = false;
-                else if (selected == OPT_LOAD_LEVELS) {
-                    navigating = false;
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) {
+                if (e.type == SDL_QUIT) { navigating = false; selected = OPT_MAIN_MENU; break; }
+                ActionType act = input_map_event(&e, 0, &app->input_config);
+                bool enter_pressed = (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER))
+                    || (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_START);
+                bool esc_pressed = (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE)
+                    || (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK);
+
+                if (act == ACT_DOWN) {
+                    OptionItem prev = selected;
+                    selected = (OptionItem)((selected + 1) % OPT_COUNT);
+                    update_opt_pointer(app, ctx, prev, selected);
+                } else if (act == ACT_UP) {
+                    OptionItem prev = selected;
+                    selected = (OptionItem)((selected + OPT_COUNT - 1) % OPT_COUNT);
+                    update_opt_pointer(app, ctx, prev, selected);
+                } else if (act == ACT_LEFT) {
+                    if (selected == OPT_REDEFINE_KEYS) {
+                        navigating = false; selected = (OptionItem)-1;
+                    } else {
+                        opt_value_minus(o, selected);
+                        SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+                        render_option_value(app, ctx, o, selected);
+                        SDL_SetRenderTarget(ctx->renderer, NULL); context_present(ctx);
+                    }
+                } else if (act == ACT_RIGHT) {
+                    opt_value_plus(o, selected);
+                    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+                    render_option_value(app, ctx, o, selected);
+                    SDL_SetRenderTarget(ctx->renderer, NULL); context_present(ctx);
+                } else if (act == ACT_ACTION || enter_pressed) {
+                    if (selected == OPT_MAIN_MENU) navigating = false;
+                    else if (selected == OPT_LOAD_LEVELS) navigating = false;
+                    else if (selected == OPT_REDEFINE_KEYS) navigating = false;
+                } else if (act == ACT_STOP || esc_pressed) {
+                    navigating = false; selected = OPT_MAIN_MENU;
+                } else if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_D) {
+                    o->cash = 750; o->treasures = 45; o->rounds = 15;
+                    o->round_time_secs = 420; o->players = 2; o->speed = 8;
+                    o->bomb_damage = 100; o->darkness = false; o->free_market = false;
+                    o->selling = false; o->win_by_money = true;
+                    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+                    for (int i = 0; i < OPT_COUNT; i++) render_option_value(app, ctx, o, (OptionItem)i);
+                    SDL_SetRenderTarget(ctx->renderer, NULL); context_present(ctx);
                 }
-            } else if (key == SDL_SCANCODE_ESCAPE) {
-                navigating = false;
-                selected = OPT_MAIN_MENU;
-            } else if (key == SDL_SCANCODE_D) {
-                o->cash = 750; o->treasures = 45; o->rounds = 15;
-                o->round_time_secs = 420; o->players = 2; o->speed = 8;
-                o->bomb_damage = 100; o->darkness = false; o->free_market = false;
-                o->selling = false; o->win_by_money = true;
-                SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
-                for (int i = 0; i < OPT_COUNT; i++) render_option_value(app, ctx, o, (OptionItem)i);
-                SDL_SetRenderTarget(ctx->renderer, NULL); context_present(ctx);
             }
+            SDL_Delay(1);
         }
         context_animate(ctx, ANIMATION_FADE_DOWN, 7);
         if (selected == OPT_LOAD_LEVELS) {
             app_run_level_select(app, ctx);
+        } else if ((int)selected == -1) {
+            app_run_music_debugger(app, ctx);
         } else {
             running = false;
         }
@@ -619,13 +668,14 @@ static const uint32_t EQUIPMENT_PRICES[] = {
     1, 3, 10, 650, 15, 65, 300, 25, 500, 80, 90, 35, 145, 15, 80, 120, 50, 400, 1100, 1600, 70, 400, 50, 80, 800, 95, 575
 };
 
-static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[2]) {
+static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[], int shop_players[], int num_panels) {
     SDL_SetRenderTarget(ctx->renderer, ctx->buffer); SDL_RenderCopy(ctx->renderer, app->shop.texture, NULL, NULL);
     SDL_Color yellow = {255, 255, 0, 255}, white = {255, 255, 255, 255}, red = {255, 0, 0, 255};
-    
-    for (int p_idx = 0; p_idx < 2; ++p_idx) {
-        int stats_x = p_idx == 0 ? 0 : 420;
-        int items_x = p_idx * 320;
+
+    for (int panel = 0; panel < num_panels; ++panel) {
+        int p_idx = shop_players[panel];
+        int stats_x = panel == 0 ? 0 : 420;
+        int items_x = panel * 320;
 
         char cash_str[32]; snprintf(cash_str, sizeof(cash_str), "%u", app->player_cash[p_idx]);
         SDL_Rect rect_cash = {35 + stats_x, 44, 56, 8}; SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255); SDL_RenderFillRect(ctx->renderer, &rect_cash);
@@ -637,15 +687,16 @@ static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[
         SDL_Rect rect_power = {35 + stats_x, 30, 56, 8}; SDL_RenderFillRect(ctx->renderer, &rect_power);
         render_text(ctx->renderer, &app->font, 35 + stats_x, 30, red, "11");
 
-        if (selected_item[p_idx] < EQUIP_TOTAL) {
-            char count_str[16]; snprintf(count_str, sizeof(count_str), "%u", app->player_inventory[p_idx][selected_item[p_idx]]);
+        int sel = selected_item[panel];
+        if (sel < EQUIP_TOTAL) {
+            char count_str[16]; snprintf(count_str, sizeof(count_str), "%u", app->player_inventory[p_idx][sel]);
             SDL_Rect rect_count = {35 + stats_x, 58, 56, 8}; SDL_RenderFillRect(ctx->renderer, &rect_count);
             render_text(ctx->renderer, &app->font, 35 + stats_x, 58, white, count_str);
         }
 
         for (int i = 0; i < EQUIP_TOTAL; ++i) {
             int col = i % 4, row = i / 4, x = col * 64 + 32 + items_x, y = row * 48 + 96;
-            glyphs_render(&app->glyphs, ctx->renderer, x, y, (i == selected_item[p_idx]) ? GLYPH_SHOP_SLOT_SELECTED : GLYPH_SHOP_SLOT_UNSELECTED);
+            glyphs_render(&app->glyphs, ctx->renderer, x, y, (i == sel) ? GLYPH_SHOP_SLOT_SELECTED : GLYPH_SHOP_SLOT_UNSELECTED);
             glyphs_render(&app->glyphs, ctx->renderer, x + 17, y + 3, (GlyphType)(GLYPH_EQUIPMENT_START + i));
             char price_str[16]; snprintf(price_str, sizeof(price_str), "%u$", EQUIPMENT_PRICES[i]);
             render_text(ctx->renderer, &app->font, x + 12, y + 36, yellow, price_str);
@@ -660,15 +711,22 @@ static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[
             }
         }
         int rx = (EQUIP_TOTAL%4)*64+32 + items_x, ry = (EQUIP_TOTAL/4)*48+96;
-        glyphs_render(&app->glyphs, ctx->renderer, rx, ry, (selected_item[p_idx] == EQUIP_TOTAL) ? GLYPH_SHOP_SLOT_SELECTED : GLYPH_SHOP_SLOT_UNSELECTED);
+        glyphs_render(&app->glyphs, ctx->renderer, rx, ry, (sel == EQUIP_TOTAL) ? GLYPH_SHOP_SLOT_SELECTED : GLYPH_SHOP_SLOT_UNSELECTED);
         glyphs_render(&app->glyphs, ctx->renderer, rx + 17, ry + 3, GLYPH_READY);
         render_text(ctx->renderer, &app->font, rx + 12, ry + 36, yellow, "READY");
     }
     
-    char rounds_str[32]; snprintf(rounds_str, sizeof(rounds_str), "%d", app->options.rounds - app->current_round);
-    render_text(ctx->renderer, &app->font, 306, 120, white, rounds_str);
+    if (app->options.players == 1) {
+        char rounds_str[32]; snprintf(rounds_str, sizeof(rounds_str), "LVL %d  LIVES %d", app->current_round + 1, app->player_lives);
+        render_text(ctx->renderer, &app->font, 280, 120, white, rounds_str);
+    } else {
+        char rounds_str[32]; snprintf(rounds_str, sizeof(rounds_str), "%d", app->options.rounds - app->current_round);
+        render_text(ctx->renderer, &app->font, 306, 120, white, rounds_str);
+    }
 
-    if (app->level_count > 0) {
+    // Level preview (multiplayer only - SP levels are a mystery)
+    uint8_t* preview_map = NULL;
+    if (app->options.players > 1 && app->level_count > 0) {
         int lvl_idx;
         if (app->selected_level_count > 0 && app->current_round < app->selected_level_count) {
             int sel = app->selected_levels[app->current_round];
@@ -676,7 +734,10 @@ static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[
         } else {
             lvl_idx = app->current_round % app->level_count;
         }
-        uint8_t* map = app->level_data[lvl_idx];
+        preview_map = app->level_data[lvl_idx];
+    }
+    if (preview_map) {
+        uint8_t* map = preview_map;
         SDL_Surface* prev = SDL_CreateRGBSurfaceWithFormat(0, 64, 45, 32, SDL_PIXELFORMAT_RGBA32);
         uint32_t* pixels = (uint32_t*)prev->pixels;
         for (int p_ry=0; p_ry<45; p_ry++) {
@@ -706,29 +767,37 @@ static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[
 
 typedef enum { PLAYER_WIN, PLAYER_LOSE, PLAYER_DRAW } PlayerResult;
 
-static PlayerResult compute_score(App* app, int player_idx) {
+static PlayerResult compute_score(App* app, int player_idx, int nplayers) {
     uint32_t score;
     if (app->options.win_by_money) score = app->player_cash[player_idx];
     else score = app->player_rounds_won[player_idx];
 
-    int bested_by = 0;
-    for (int i = 0; i < MAX_PLAYERS; i++) {
+    // Find the highest score among all players
+    uint32_t best = 0;
+    for (int i = 0; i < nplayers; i++) {
+        uint32_t s = app->options.win_by_money ? app->player_cash[i] : app->player_rounds_won[i];
+        if (s > best) best = s;
+    }
+
+    if (score < best) return PLAYER_LOSE;
+
+    // score == best: check if anyone else also has best
+    for (int i = 0; i < nplayers; i++) {
         if (i == player_idx) continue;
         uint32_t other = app->options.win_by_money ? app->player_cash[i] : app->player_rounds_won[i];
-        if (other > score) bested_by++;
+        if (other == best) return PLAYER_DRAW;
     }
-    if (bested_by == 0) return PLAYER_WIN;
-    if (bested_by == MAX_PLAYERS - 1) return PLAYER_LOSE;
-    return PLAYER_DRAW;
+    return PLAYER_WIN;
 }
 
 static void app_run_victory_screen(App* app, ApplicationContext* ctx) {
+    int nplayers = app->options.players;
     SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
     SDL_RenderCopy(ctx->renderer, app->final_screen.texture, NULL, NULL);
     SDL_Color color = app->final_screen.palette[1];
 
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        PlayerResult result = compute_score(app, i);
+    for (int i = 0; i < nplayers; i++) {
+        PlayerResult result = compute_score(app, i, nplayers);
         SDL_Texture* avatar = NULL;
         switch (result) {
             case PLAYER_WIN: avatar = app->avatar_win[i].texture; break;
@@ -756,49 +825,37 @@ static void app_run_victory_screen(App* app, ApplicationContext* ctx) {
     context_animate(ctx, ANIMATION_FADE_DOWN, 7);
 }
 
-static void app_run_shop(App* app, ApplicationContext* ctx) {
-    context_play_music_at(ctx, "OEKU.S3M", 83);
+// Run a shop batch for a pair of players (panels). Returns false if quit requested.
+static bool app_run_shop_batch(App* app, ApplicationContext* ctx, int players[], int num_panels) {
     int selected[2] = {0, 0}; bool ready[2] = {false, false};
+    if (num_panels < 2) ready[1] = true;
     bool running = true;
     while (running) {
-        render_shop_ui(app, ctx, selected);
-        
+        render_shop_ui(app, ctx, selected, players, num_panels);
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_QUIT) { running = false; break; }
-            
-            for (int p = 0; p < 2; ++p) {
-                ActionType act = input_map_event(&e, p, &app->input_config);
-                bool start_pressed = false;
-                
-                if (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_START) start_pressed = true;
-                if (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER)) start_pressed = true;
-
-                if (ready[p]) continue;
-
-                if (start_pressed) {
-                    selected[p] = EQUIP_TOTAL;
-                    ready[p] = true;
-                }
-
+            if (e.type == SDL_QUIT) return false;
+            for (int panel = 0; panel < num_panels; ++panel) {
+                int pi = players[panel];
+                ActionType act = input_map_event(&e, pi, &app->input_config);
+                if (ready[panel]) continue;
                 if (act != ACT_MAX_PLAYER) {
                     switch (act) {
-                        case ACT_UP:    if (selected[p] >= 4) selected[p] -= 4; break;
-                        case ACT_DOWN:  if (selected[p] + 4 <= EQUIP_TOTAL) selected[p] += 4; else selected[p] = EQUIP_TOTAL; break;
-                        case ACT_LEFT:  selected[p] = (selected[p] + EQUIP_TOTAL) % (EQUIP_TOTAL + 1); break;
-                        case ACT_RIGHT: selected[p] = (selected[p] + 1) % (EQUIP_TOTAL + 1); break;
+                        case ACT_UP:    if (selected[panel] >= 4) selected[panel] -= 4; break;
+                        case ACT_DOWN:  if (selected[panel] + 4 <= EQUIP_TOTAL) selected[panel] += 4; else selected[panel] = EQUIP_TOTAL; break;
+                        case ACT_LEFT:  selected[panel] = (selected[panel] + EQUIP_TOTAL) % (EQUIP_TOTAL + 1); break;
+                        case ACT_RIGHT: selected[panel] = (selected[panel] + 1) % (EQUIP_TOTAL + 1); break;
                         case ACT_ACTION:
-                            if (selected[p] == EQUIP_TOTAL) {
-                                ready[p] = true;
-                            } else if (app->player_cash[p] >= EQUIPMENT_PRICES[selected[p]]) {
-                                app->player_cash[p] -= EQUIPMENT_PRICES[selected[p]];
-                                app->player_inventory[p][selected[p]]++;
+                            if (selected[panel] == EQUIP_TOTAL) { ready[panel] = true; }
+                            else if (app->player_cash[pi] >= EQUIPMENT_PRICES[selected[panel]]) {
+                                app->player_cash[pi] -= EQUIPMENT_PRICES[selected[panel]];
+                                app->player_inventory[pi][selected[panel]]++;
                             }
                             break;
                         case ACT_STOP:
-                            if (selected[p] != EQUIP_TOTAL && app->player_inventory[p][selected[p]] > 0) {
-                                app->player_inventory[p][selected[p]]--;
-                                app->player_cash[p] += EQUIPMENT_PRICES[selected[p]] / 2;
+                            if (selected[panel] != EQUIP_TOTAL && app->player_inventory[pi][selected[panel]] > 0) {
+                                app->player_inventory[pi][selected[panel]]--;
+                                app->player_cash[pi] += EQUIPMENT_PRICES[selected[panel]] / 2;
                             }
                             break;
                         default: break;
@@ -806,55 +863,172 @@ static void app_run_shop(App* app, ApplicationContext* ctx) {
                 }
             }
         }
-
-        if (ready[0] && ready[1]) {
-            if (app->level_count > 0) {
-                // Pick level: use selected levels list if available, else sequential
-                int lvl_idx;
-                if (app->selected_level_count > 0 && app->current_round < app->selected_level_count) {
-                    int sel = app->selected_levels[app->current_round];
-                    if (sel == 0) lvl_idx = rand() % app->level_count; // "Random"
-                    else lvl_idx = sel - 1;
-                } else {
-                    lvl_idx = app->current_round % app->level_count;
-                }
-                context_animate(ctx, ANIMATION_FADE_DOWN, 7);
-                RoundResult result = game_run(app, ctx, app->level_data[lvl_idx]);
-
-                // Award round wins to surviving players (only if not everyone survived)
-                int alive = 0;
-                for (int p = 0; p < MAX_PLAYERS; p++) if (result.player_survived[p]) alive++;
-                if (alive > 0 && alive < MAX_PLAYERS) {
-                    for (int p = 0; p < MAX_PLAYERS; p++) {
-                        if (result.player_survived[p]) app->player_rounds_won[p]++;
-                    }
-                }
-                // Give minimum cash if too low
-                for (int p = 0; p < MAX_PLAYERS; p++) {
-                    if (app->player_cash[p] < 100) app->player_cash[p] += 150;
-                }
-
-                context_linger_music_start(ctx);
-                context_animate(ctx, ANIMATION_FADE_DOWN, 7);
-                context_linger_music_end(ctx);
-                app->current_round++;
-                ready[0] = ready[1] = false;
-                if (app->current_round >= app->options.rounds) running = false;
-                else {
-                    context_play_music_at(ctx, "OEKU.S3M", 83);
-                    render_shop_ui(app, ctx, selected);
-                    context_animate(ctx, ANIMATION_FADE_UP, 7);
-                }
-            }
-        }
+        if (ready[0] && ready[1]) running = false;
         SDL_Delay(16);
     }
+    return true;
+}
 
-    // Show victory screen if rounds were completed
-    if (app->current_round >= app->options.rounds) {
-        context_stop_music(ctx);
-        app_run_victory_screen(app, ctx);
+static void app_run_shop(App* app, ApplicationContext* ctx) {
+    int nplayers = app->options.players;
+    bool running = true;
+    while (running) {
+        context_play_music_at(ctx, "OEKU.S3M", 83);
+
+        // Shop in batches of 2 players
+        bool quit = false;
+        for (int batch_start = 0; batch_start < nplayers && !quit; batch_start += 2) {
+            int batch[2]; int num_panels = 0;
+            for (int i = batch_start; i < nplayers && i < batch_start + 2; i++)
+                batch[num_panels++] = i;
+            if (!app_run_shop_batch(app, ctx, batch, num_panels)) { quit = true; break; }
+        }
+        if (quit) break;
+
+        if (app->level_count > 0) {
+            int lvl_idx;
+            if (app->selected_level_count > 0 && app->current_round < app->selected_level_count) {
+                int sel = app->selected_levels[app->current_round];
+                if (sel == 0) lvl_idx = rand() % app->level_count;
+                else lvl_idx = sel - 1;
+            } else {
+                lvl_idx = app->current_round % app->level_count;
+            }
+            context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+            RoundResult result = game_run(app, ctx, app->level_data[lvl_idx]);
+
+            int alive = 0;
+            for (int p = 0; p < nplayers; p++) if (result.player_survived[p]) alive++;
+            if (alive > 0 && alive < nplayers) {
+                for (int p = 0; p < nplayers; p++)
+                    if (result.player_survived[p]) app->player_rounds_won[p]++;
+            }
+            for (int p = 0; p < nplayers; p++)
+                if (app->player_cash[p] < 100) app->player_cash[p] += 150;
+
+            context_linger_music_start(ctx);
+            context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+            context_linger_music_end(ctx);
+            app->current_round++;
+            if (app->current_round >= app->options.rounds || result.end_type == ROUND_END_FINAL) running = false;
+        }
     }
+
+    context_stop_music(ctx);
+    app_run_victory_screen(app, ctx);
+}
+
+static void app_run_campaign_end(App* app, ApplicationContext* ctx, bool win) {
+    context_stop_music(ctx);
+    SDL_Texture* tex = win ? app->congratu.texture : app->game_over.texture;
+    if (tex) {
+        SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+        SDL_RenderCopy(ctx->renderer, tex, NULL, NULL);
+        SDL_SetRenderTarget(ctx->renderer, NULL);
+        context_animate(ctx, ANIMATION_FADE_UP, 7);
+        if (win && app->sound_applause) context_play_sample_freq(app->sound_applause, 11000);
+        context_wait_key_pressed(ctx);
+        context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+    }
+
+    // Hall of fame
+    if (app->halloffa.texture) {
+        SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+        SDL_RenderCopy(ctx->renderer, app->halloffa.texture, NULL, NULL);
+        SDL_Color color = app->halloffa.palette[1];
+        char score_str[64];
+        snprintf(score_str, sizeof(score_str), "1    %-20s Level %-2d Money %u",
+                 app->player_name[0], app->current_round, app->player_cash[0]);
+        render_text(ctx->renderer, &app->font, 127, 179, color, score_str);
+        SDL_SetRenderTarget(ctx->renderer, NULL);
+        context_animate(ctx, ANIMATION_FADE_UP, 7);
+        context_wait_key_pressed(ctx);
+        context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+    }
+}
+
+static void app_run_campaign(App* app, ApplicationContext* ctx) {
+    if (app->campaign_level_count == 0) return;
+
+    app->current_round = 0;
+    app->player_lives = 3;
+    app->player_cash[0] = 250;
+    app->player_rounds_won[0] = 0;
+    memset(app->player_inventory[0], 0, sizeof(app->player_inventory[0]));
+
+    int max_rounds = app->campaign_level_count;
+
+    while (app->current_round < max_rounds && app->player_lives > 0) {
+        // Shop before each round
+        context_play_music_at(ctx, "OEKU.S3M", 83);
+        int selected[2] = {0, 0}; bool ready[2] = {false, true}; // P2 always ready (single player)
+        int sp_players[1] = {0}; int sp_panels = 1;
+        bool shopping = true;
+        while (shopping) {
+            render_shop_ui(app, ctx, selected, sp_players, sp_panels);
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) {
+                if (e.type == SDL_QUIT) { app->player_lives = 0; shopping = false; break; }
+                ActionType act = input_map_event(&e, 0, &app->input_config);
+                bool start_pressed = false;
+                if (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_START) start_pressed = true;
+                if (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER)) start_pressed = true;
+
+                if (ready[0]) { if (start_pressed || act == ACT_ACTION) shopping = false; continue; }
+
+                if (start_pressed) { selected[0] = EQUIP_TOTAL; ready[0] = true; shopping = false; }
+                if (act != ACT_MAX_PLAYER) {
+                    switch (act) {
+                        case ACT_UP:    if (selected[0] >= 4) selected[0] -= 4; break;
+                        case ACT_DOWN:  if (selected[0] + 4 <= EQUIP_TOTAL) selected[0] += 4; else selected[0] = EQUIP_TOTAL; break;
+                        case ACT_LEFT:  selected[0] = (selected[0] + EQUIP_TOTAL) % (EQUIP_TOTAL + 1); break;
+                        case ACT_RIGHT: selected[0] = (selected[0] + 1) % (EQUIP_TOTAL + 1); break;
+                        case ACT_ACTION:
+                            if (selected[0] == EQUIP_TOTAL) { ready[0] = true; shopping = false; }
+                            else if (app->player_cash[0] >= EQUIPMENT_PRICES[selected[0]]) {
+                                app->player_cash[0] -= EQUIPMENT_PRICES[selected[0]];
+                                app->player_inventory[0][selected[0]]++;
+                            }
+                            break;
+                        case ACT_STOP:
+                            if (selected[0] != EQUIP_TOTAL && app->player_inventory[0][selected[0]] > 0) {
+                                app->player_inventory[0][selected[0]]--;
+                                app->player_cash[0] += EQUIPMENT_PRICES[selected[0]] / 2;
+                            }
+                            break;
+                        default: break;
+                    }
+                }
+            }
+            SDL_Delay(16);
+        }
+
+        if (app->player_lives == 0) break;
+
+        // Play the level
+        context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+        RoundResult result = game_run(app, ctx, app->campaign_levels[app->current_round]);
+        app->player_lives += result.lives_gained;
+
+        context_linger_music_start(ctx);
+        context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+        context_linger_music_end(ctx);
+
+        if (result.end_type == ROUND_END_EXITED) {
+            app->current_round++;
+        } else if (result.end_type == ROUND_END_FAILED) {
+            app->player_lives--;
+            // Don't advance round - retry same level
+        } else if (result.end_type == ROUND_END_QUIT) {
+            break;
+        }
+
+        // Minimum cash
+        if (app->player_cash[0] < 100) app->player_cash[0] += 150;
+    }
+
+    bool win = (app->current_round >= max_rounds);
+    app_run_campaign_end(app, ctx, win);
 }
 
 void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
@@ -883,11 +1057,9 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
                 else if (act == ACT_DOWN) { SelectedMenu n = menu_next(selected); update_shovel(app, ctx, selected, n); selected = n; }
                 else if (act == ACT_ACTION || (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER))) navigating = false;
                 else if (act == ACT_STOP || (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE)) { selected = MENU_QUIT; navigating = false; running = false; }
-                else if (e.type == SDL_KEYDOWN) {
-                    if (e.key.keysym.scancode == SDL_SCANCODE_M) { entering_debug = true; debug_func = app_run_music_debugger; navigating = false; }
-                    if (e.key.keysym.scancode == SDL_SCANCODE_LEFT && selected == MENU_INFO) { entering_debug = true; debug_func = app_run_sound_test; navigating = false; }
-                    if (e.key.keysym.scancode == SDL_SCANCODE_RIGHT && selected == MENU_INFO) { entering_debug = true; debug_func = app_run_level_test; navigating = false; }
-                }
+                else if (act == ACT_LEFT && selected == MENU_INFO) { entering_debug = true; debug_func = app_run_sound_test; navigating = false; }
+                else if (act == ACT_RIGHT && selected == MENU_INFO) { entering_debug = true; debug_func = app_run_level_test; navigating = false; }
+                else if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_M) { entering_debug = true; debug_func = app_run_music_debugger; navigating = false; }
             }
             SDL_Delay(1);
         }
@@ -895,12 +1067,17 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
         context_animate(ctx, ANIMATION_FADE_DOWN, 7);
         if (selected == MENU_QUIT) break;
         else if (selected == MENU_NEW_GAME) {
-            app->current_round = 0;
-            for (int p = 0; p < MAX_PLAYERS; ++p) {
-                app->player_cash[p] = app->options.cash;
-                app->player_rounds_won[p] = 0;
+            if (app->options.players == 1) {
+                app_run_campaign(app, ctx);
+            } else {
+                app->current_round = 0;
+                for (int p = 0; p < MAX_PLAYERS; ++p) {
+                    app->player_cash[p] = app->options.cash;
+                    app->player_rounds_won[p] = 0;
+                    memset(app->player_inventory[p], 0, sizeof(app->player_inventory[p]));
+                }
+                app_run_shop(app, ctx);
             }
-            app_run_shop(app, ctx);
         }
         else if (selected == MENU_OPTIONS) app_run_options(app, ctx);
         else if (selected == MENU_INFO) app_run_info_menu(app, ctx);

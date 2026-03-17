@@ -39,44 +39,53 @@ void glyphs_init(Glyphs* glyphs, SDL_Texture* texture) {
 static SDL_Rect get_glyph_rect(GlyphType type) {
     SDL_Rect r = {0, 0, 10, 10};
 
-    if (type >= GLYPH_PLAYER_DIG_START + 4000) {
-        // Player 2 digging (>= 6000)
-        int p_idx = type - (GLYPH_PLAYER_DIG_START + 4000);
-        int dir = p_idx % 4;
-        int anim = (p_idx / 4) % 4;
-        r.x = 0 + (dir * 40) + (anim * 10);
-        r.y = 200;
+    // Monster glyphs: base + dir + anim*4
+    if (type >= GLYPH_MONSTER_ALIEN) {
+        int idx = type - GLYPH_MONSTER_ALIEN;
+        int dir = idx % 4, anim = (idx / 4) % 4;
+        r.x = 0 + dir * 40 + anim * 10; r.y = 80;
+        return r;
+    }
+    if (type >= GLYPH_MONSTER_SLIME) {
+        int idx = type - GLYPH_MONSTER_SLIME;
+        int dir = idx % 4, anim = (idx / 4) % 4;
+        r.x = 160 + dir * 40 + anim * 10; r.y = 70;
+        return r;
+    }
+    if (type >= GLYPH_MONSTER_GRENADIER) {
+        int idx = type - GLYPH_MONSTER_GRENADIER;
+        int dir = idx % 4, anim = (idx / 4) % 4;
+        r.x = 160 + dir * 40 + anim * 10; r.y = 60;
+        return r;
+    }
+    if (type >= GLYPH_MONSTER_FURRY) {
+        int idx = type - GLYPH_MONSTER_FURRY;
+        int dir = idx % 4, anim = (idx / 4) % 4;
+        r.x = 160 + dir * 40 + anim * 10; r.y = 50;
         return r;
     }
 
-    if (type >= GLYPH_PLAYER_START + 4000) {
-        // Player 2 walking (>= 5000)
-        int p_idx = type - (GLYPH_PLAYER_START + 4000);
-        int dir = p_idx % 4;
-        int anim = (p_idx / 4) % 4;
-        r.x = 160 + (dir * 40) + (anim * 10);
-        r.y = 0;
-        return r;
-    }
+    // Player glyphs: walk and dig for players 1-4
+    // Layout: GLYPH_PLAYER_START + player*1000 = walk, GLYPH_PLAYER_DIG_START + player*1000 = dig
+    static const int player_walk_y[] = {10, 0, 30, 40};
+    static const int player_dig_x[]  = {160, 0, 0, 160};
+    static const int player_dig_y[]  = {200, 200, 210, 210};
 
-    if (type >= GLYPH_PLAYER_DIG_START) {
-        // Player 1 digging (>= 2000)
-        int p_idx = type - GLYPH_PLAYER_DIG_START;
-        int dir = p_idx % 4;
-        int anim = (p_idx / 4) % 4;
-        r.x = 160 + (dir * 40) + (anim * 10);
-        r.y = 200;
-        return r;
-    }
-
-    if (type >= GLYPH_PLAYER_START) {
-        // Player 1 walking (>= 1000)
-        int p_idx = type - GLYPH_PLAYER_START;
-        int dir = p_idx % 4;
-        int anim = (p_idx / 4) % 4;
-        r.x = 160 + (dir * 40) + (anim * 10);
-        r.y = 10;
-        return r;
+    for (int pi = 3; pi >= 0; pi--) {
+        if ((int)type >= GLYPH_PLAYER_DIG_START + pi * 1000) {
+            int p_idx = type - (GLYPH_PLAYER_DIG_START + pi * 1000);
+            int dir = p_idx % 4, anim = (p_idx / 4) % 4;
+            r.x = player_dig_x[pi] + dir * 40 + anim * 10;
+            r.y = player_dig_y[pi];
+            return r;
+        }
+        if ((int)type >= GLYPH_PLAYER_START + pi * 1000) {
+            int p_idx = type - (GLYPH_PLAYER_START + pi * 1000);
+            int dir = p_idx % 4, anim = (p_idx / 4) % 4;
+            r.x = 160 + dir * 40 + anim * 10;
+            r.y = player_walk_y[pi];
+            return r;
+        }
     }
 
     if (type >= GLYPH_MAP_START) {

@@ -53,6 +53,26 @@ void input_get_default(InputConfig* config) {
     config->p[1].bindings[ACT_ACTION][0] = (Binding){BIND_KEY, SDL_SCANCODE_5, 0};
     config->p[1].bindings[ACT_CYCLE][0] = (Binding){BIND_KEY, SDL_SCANCODE_7, 0};
     config->p[1].bindings[ACT_REMOTE][0] = (Binding){BIND_KEY, SDL_SCANCODE_8, 0};
+
+    // Player 3 Defaults
+    config->p[2].bindings[ACT_UP][0] = (Binding){BIND_KEY, SDL_SCANCODE_T, 0};
+    config->p[2].bindings[ACT_DOWN][0] = (Binding){BIND_KEY, SDL_SCANCODE_G, 0};
+    config->p[2].bindings[ACT_LEFT][0] = (Binding){BIND_KEY, SDL_SCANCODE_F, 0};
+    config->p[2].bindings[ACT_RIGHT][0] = (Binding){BIND_KEY, SDL_SCANCODE_H, 0};
+    config->p[2].bindings[ACT_STOP][0] = (Binding){BIND_KEY, SDL_SCANCODE_V, 0};
+    config->p[2].bindings[ACT_ACTION][0] = (Binding){BIND_KEY, SDL_SCANCODE_C, 0};
+    config->p[2].bindings[ACT_CYCLE][0] = (Binding){BIND_KEY, SDL_SCANCODE_B, 0};
+    config->p[2].bindings[ACT_REMOTE][0] = (Binding){BIND_KEY, SDL_SCANCODE_N, 0};
+
+    // Player 4 Defaults
+    config->p[3].bindings[ACT_UP][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_8, 0};
+    config->p[3].bindings[ACT_DOWN][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_5, 0};
+    config->p[3].bindings[ACT_LEFT][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_4, 0};
+    config->p[3].bindings[ACT_RIGHT][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_6, 0};
+    config->p[3].bindings[ACT_STOP][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_2, 0};
+    config->p[3].bindings[ACT_ACTION][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_1, 0};
+    config->p[3].bindings[ACT_CYCLE][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_3, 0};
+    config->p[3].bindings[ACT_REMOTE][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_0, 0};
 }
 
 bool input_load_config(InputConfig* config, const char* filename) {
@@ -68,6 +88,8 @@ bool input_load_config(InputConfig* config, const char* filename) {
             int p_idx = -1;
             if (strncmp(key, "P1_", 3) == 0) p_idx = 0;
             else if (strncmp(key, "P2_", 3) == 0) p_idx = 1;
+            else if (strncmp(key, "P3_", 3) == 0) p_idx = 2;
+            else if (strncmp(key, "P4_", 3) == 0) p_idx = 3;
 
             if (p_idx != -1) {
                 const char* act_name = key + 3;
@@ -112,9 +134,9 @@ void input_save_config(const InputConfig* config, const char* filename) {
     if (!f) return;
 
     fprintf(f, "# MineBombers Input Configuration\n");
-    fprintf(f, "# Format: P<1|2>_<ACTION>=K:<scancode>,B:<button>,A:<axis>:<dir>\n\n");
+    fprintf(f, "# Format: P<1-4>_<ACTION>=K:<scancode>,B:<button>,A:<axis>:<dir>\n\n");
 
-    for (int p = 0; p < 2; ++p) {
+    for (int p = 0; p < 4; ++p) {
         for (int i = 0; i < ACT_MAX_PLAYER; ++i) {
             fprintf(f, "P%d_%s=", p + 1, action_names[i]);
             bool first = true;
@@ -136,7 +158,7 @@ void input_save_config(const InputConfig* config, const char* filename) {
 
 void input_print(const InputConfig* config) {
     printf("--- Input Mappings ---\n");
-    for (int p = 0; p < 2; ++p) {
+    for (int p = 0; p < 4; ++p) {
         printf("Player %d:\n", p + 1);
         for (int i = 0; i < ACT_MAX_PLAYER; ++i) {
             printf("  %-8s: ", action_names[i]);

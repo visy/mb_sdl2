@@ -31,8 +31,8 @@ typedef struct {
 } PlayerInputConfig;
 
 typedef struct {
-    PlayerInputConfig p[2];
-    int axis_state[2][SDL_CONTROLLER_AXIS_MAX];
+    PlayerInputConfig p[4];
+    int axis_state[4][SDL_CONTROLLER_AXIS_MAX];
 } InputConfig;
 
 void input_get_default(InputConfig* config);
