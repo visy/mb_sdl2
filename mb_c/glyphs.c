@@ -144,6 +144,8 @@ static SDL_Rect get_glyph_rect(GlyphType type) {
         case GLYPH_BURNED_STONE_R: r.x=211; r.y=117; r.w=4; r.h=10; break;
         case GLYPH_BURNED_STONE_U: r.x=205; r.y=128; r.w=10; r.h=3; break;
         case GLYPH_BURNED_STONE_D: r.x=205; r.y=132; r.w=10; r.h=3; break;
+        case GLYPH_LIFE: r.x=31; r.y=91; r.w=12; r.h=21; break;
+        case GLYPH_LIFE_LOST: r.x=43; r.y=91; r.w=19; r.h=21; break;
         default: break;
     }
     return r;

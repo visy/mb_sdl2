@@ -150,15 +150,25 @@ static void reveal_view(World* world, int px, int py, Direction facing) {
         int abs_offset = offset < 0 ? -offset : offset;
         int slope_error = 2 * abs_offset - 20;
         int cx = px, cy = py;
+        // Determine orthogonal step direction matching Rust's ortho()/reverse():
+        //   RIGHT: ortho=Down,  so offset>=0 → +y, offset<0 → -y
+        //   LEFT:  ortho=Up,    so offset>=0 → -y, offset<0 → +y
+        //   UP:    ortho=Right, so offset>=0 → +x, offset<0 → -x
+        //   DOWN:  ortho=Left,  so offset>=0 → -x, offset<0 → +x
+        int odx = 0, ody = 0;
+        switch (facing) {
+            case DIR_RIGHT: ody = (offset >= 0) ?  1 : -1; break;
+            case DIR_LEFT:  ody = (offset >= 0) ? -1 :  1; break;
+            case DIR_UP:    odx = (offset >= 0) ?  1 : -1; break;
+            case DIR_DOWN:  odx = (offset >= 0) ? -1 :  1; break;
+        }
         for (int step = 0; step <= 20; step++) {
             if (cx < 0 || cx >= MAP_WIDTH || cy < 0 || cy >= MAP_HEIGHT) break;
             world->fog[cy][cx] = false;
             if (!see_through(world->tiles[cy][cx])) break;
             if (slope_error > 0) {
-                switch (facing) {
-                    case DIR_RIGHT: case DIR_LEFT: cy += (offset < 0) ? -1 : 1; break;
-                    case DIR_UP: case DIR_DOWN:    cx += (offset < 0) ? -1 : 1; break;
-                }
+                cx += odx;
+                cy += ody;
                 slope_error -= 2 * 20;
             }
             slope_error += 2 * abs_offset;
@@ -170,13 +180,13 @@ static void reveal_view(World* world, int px, int py, Direction facing) {
             }
         }
     }
+    // Room reveal: walk forward from player, revealing adjacent cells
     int cx = px, cy = py;
-    while (cx >= 0 && cx < MAP_WIDTH && cy >= 0 && cy < MAP_HEIGHT && is_passable(world->tiles[cy][cx])) {
+    while (cx > 0 && cx < MAP_WIDTH - 1 && cy > 0 && cy < MAP_HEIGHT - 1 && is_passable(world->tiles[cy][cx])) {
         for (int d = 0; d < 4; d++) {
             int nx = cx + (d == 0 ? 1 : d == 1 ? -1 : 0);
             int ny = cy + (d == 2 ? -1 : d == 3 ? 1 : 0);
-            if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT)
-                world->fog[ny][nx] = false;
+            world->fog[ny][nx] = false;
         }
         switch (facing) {
             case DIR_RIGHT: cx++; break;
@@ -218,11 +228,6 @@ static void explode_cell_ex(World* world, int cx, int cy, int dmg, bool heavy) {
     apply_explosion_damage(world, cx, cy, dmg);
     uint8_t val = world->tiles[cy][cx];
 
-    if (cx > 0 && !is_passable(world->tiles[cy][cx-1])) world->burned[cy][cx] |= BURNED_L;
-    if (cx < MAP_WIDTH - 1 && !is_passable(world->tiles[cy][cx+1])) world->burned[cy][cx] |= BURNED_R;
-    if (cy > 0 && !is_passable(world->tiles[cy-1][cx])) world->burned[cy][cx] |= BURNED_U;
-    if (cy < MAP_HEIGHT - 1 && !is_passable(world->tiles[cy+1][cx])) world->burned[cy][cx] |= BURNED_D;
-
     if (is_bomb(val)) {
         // Immediately trigger the bomb (matching Rust's immediate dispatch)
         explode_bomb(world, cx, cy);
@@ -256,6 +261,7 @@ static void explode_cell_ex(World* world, int cx, int cy, int dmg, bool heavy) {
         world->tiles[cy][cx] = TILE_EXPLOSION;
         world->timer[cy][cx] = 3;
     }
+    if (world->tiles[cy][cx] == TILE_EXPLOSION) world->burned[cy][cx] = 1;
 }
 
 static void explode_cell(World* world, int cx, int cy, int dmg) {
@@ -282,6 +288,7 @@ static void explode_pattern(World* world, int cx, int cy, int dmg, const int pat
 static void explode_barrel(World* world, int cx, int cy, App* app) {
     world->tiles[cy][cx] = TILE_EXPLOSION;
     world->timer[cy][cx] = 3;
+    world->burned[cy][cx] = 1;
     if (app->sound_explos1) context_play_sample_freq(app->sound_explos1, 11000);
     int from = rand() % 5;
     for (int i = from; i < 15; i++) {
@@ -290,7 +297,6 @@ static void explode_barrel(World* world, int cx, int cy, App* app) {
         int tx = cx + dx, ty = cy + dy;
         if (tx >= 0 && tx < MAP_WIDTH && ty >= 0 && ty < MAP_HEIGHT) {
             explode_pattern(world, tx, ty, 84, BIG_BOMB_PATTERN, sizeof(BIG_BOMB_PATTERN)/sizeof(BIG_BOMB_PATTERN[0]));
-            if (app->sound_explos1) context_play_sample_freq(app->sound_explos1, 11000);
         }
     }
 }
@@ -599,6 +605,7 @@ static void explode_bomb(World* world, int cx, int cy) {
         // Unknown bomb type: generic explosion
         world->tiles[cy][cx] = TILE_EXPLOSION;
         world->timer[cy][cx] = 3;
+        world->burned[cy][cx] = 1;
     }
 }
 
@@ -1260,33 +1267,39 @@ static void render_actor(App* app, SDL_Renderer* renderer, Actor* actor, int act
     glyphs_render(&app->glyphs, renderer, actor->pos.x - 5, actor->pos.y - 5, (GlyphType)glyph);
 }
 
+static bool is_stone_like(uint8_t val) {
+    return is_stone(val) || (val >= TILE_STONE_TOP_LEFT && val <= TILE_STONE_BOTTOM_RIGHT)
+        || val == TILE_STONE_BOTTOM_LEFT || val == TILE_STONE_CRACKED_LIGHT || val == TILE_STONE_CRACKED_HEAVY;
+}
+
 static void render_burned_borders(App* app, SDL_Renderer* renderer, World* world, int x, int y) {
+    if (!world->burned[y][x]) return;
     uint8_t val = world->tiles[y][x];
+    if (val != TILE_PASSAGE && val != TILE_BLOOD && val != TILE_SLIME_CORPSE
+        && val != TILE_EXPLOSION && val != TILE_MONSTER_DYING) return;
+
     int px = x * 10;
     int py = y * 10 + 30;
 
-    if (val == TILE_EXPLOSION || val == TILE_SMOKE1 || val == TILE_SMOKE2 || is_open_for_border(val)) {
-        uint8_t b = (val == TILE_EXPLOSION) ? 0xF : world->burned[y][x];
-        if (b & BURNED_L && x > 0) {
-            uint8_t n = world->tiles[y][x-1];
-            if (is_sand(n)||n==TILE_GRAVEL_LIGHT||n==TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, renderer, px-4, py, GLYPH_BURNED_SAND_R);
-            else if (is_stone(n)||n==TILE_STONE_CRACKED_LIGHT||n==TILE_STONE_CRACKED_HEAVY||is_brick(n)) glyphs_render(&app->glyphs, renderer, px-4, py, GLYPH_BURNED_STONE_R);
-        }
-        if (b & BURNED_R && x < MAP_WIDTH-1) {
-            uint8_t n = world->tiles[y][x+1];
-            if (is_sand(n)||n==TILE_GRAVEL_LIGHT||n==TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, renderer, px+10, py, GLYPH_BURNED_SAND_L);
-            else if (is_stone(n)||n==TILE_STONE_CRACKED_LIGHT||n==TILE_STONE_CRACKED_HEAVY||is_brick(n)) glyphs_render(&app->glyphs, renderer, px+10, py, GLYPH_BURNED_STONE_L);
-        }
-        if (b & BURNED_U && y > 0) {
-            uint8_t n = world->tiles[y-1][x];
-            if (is_sand(n)||n==TILE_GRAVEL_LIGHT||n==TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, renderer, px, py-3, GLYPH_BURNED_SAND_D);
-            else if (is_stone(n)||n==TILE_STONE_CRACKED_LIGHT||n==TILE_STONE_CRACKED_HEAVY||is_brick(n)) glyphs_render(&app->glyphs, renderer, px, py-3, GLYPH_BURNED_STONE_D);
-        }
-        if (b & BURNED_D && y < MAP_HEIGHT-1) {
-            uint8_t n = world->tiles[y+1][x];
-            if (is_sand(n)||n==TILE_GRAVEL_LIGHT||n==TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, renderer, px, py+10, GLYPH_BURNED_SAND_U);
-            else if (is_stone(n)||n==TILE_STONE_CRACKED_LIGHT||n==TILE_STONE_CRACKED_HEAVY||is_brick(n)) glyphs_render(&app->glyphs, renderer, px, py+10, GLYPH_BURNED_STONE_U);
-        }
+    if (x > 0) {
+        uint8_t n = world->tiles[y][x-1];
+        if (is_sand(n)||n==TILE_GRAVEL_LIGHT||n==TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, renderer, px-4, py, GLYPH_BURNED_SAND_R);
+        else if (is_stone_like(n)) glyphs_render(&app->glyphs, renderer, px-4, py, GLYPH_BURNED_STONE_R);
+    }
+    if (x < MAP_WIDTH-1) {
+        uint8_t n = world->tiles[y][x+1];
+        if (is_sand(n)||n==TILE_GRAVEL_LIGHT||n==TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, renderer, px+10, py, GLYPH_BURNED_SAND_L);
+        else if (is_stone_like(n)) glyphs_render(&app->glyphs, renderer, px+10, py, GLYPH_BURNED_STONE_L);
+    }
+    if (y > 0) {
+        uint8_t n = world->tiles[y-1][x];
+        if (is_sand(n)||n==TILE_GRAVEL_LIGHT||n==TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, renderer, px, py-3, GLYPH_BURNED_SAND_D);
+        else if (is_stone_like(n)) glyphs_render(&app->glyphs, renderer, px, py-3, GLYPH_BURNED_STONE_D);
+    }
+    if (y < MAP_HEIGHT-1) {
+        uint8_t n = world->tiles[y+1][x];
+        if (is_sand(n)||n==TILE_GRAVEL_LIGHT||n==TILE_GRAVEL_HEAVY) glyphs_render(&app->glyphs, renderer, px, py+10, GLYPH_BURNED_SAND_U);
+        else if (is_stone_like(n)) glyphs_render(&app->glyphs, renderer, px, py+10, GLYPH_BURNED_STONE_U);
     }
 }
 
@@ -1342,6 +1355,19 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
         render_text(ctx->renderer, &app->font, 12 + 70, 2, white, "GOD MODE ON");
     }
 
+    if (world->campaign_mode) {
+        int lives = app->player_lives + world->lives_gained;
+        int show = lives < 3 ? 3 : lives;
+        int lx = 160 * world->num_players;
+        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+        SDL_Rect lives_bg = {lx, 2, 480, 28};
+        SDL_RenderFillRect(ctx->renderer, &lives_bg);
+        for (int i = 0; i < show; i++) {
+            GlyphType g = (i < lives) ? GLYPH_LIFE : GLYPH_LIFE_LOST;
+            glyphs_render(&app->glyphs, ctx->renderer, i * 16 + lx, 2, g);
+        }
+    }
+
     if (world->darkness) {
         for (int x = 0; x < MAP_WIDTH; ++x) {
             glyphs_render(&app->glyphs, ctx->renderer, x * 10, 30, (GlyphType)(GLYPH_MAP_START + world->tiles[0][x]));
@@ -1365,19 +1391,20 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
                 if (!world->fog[y][x])
                     render_burned_borders(app, ctx->renderer, world, x, y);
 
-        // Render monsters first, then players on top
-        for (int pass = 0; pass < 2; pass++) {
-            int start = pass == 0 ? world->num_players : 0;
-            int end = pass == 0 ? world->num_actors : world->num_players;
-            for (int i = start; i < end; ++i) {
-                Actor* a = &world->actors[i];
-                if (!a->is_dead) {
-                    int acx = a->pos.x / 10;
-                    int acy = (a->pos.y - 30) / 10;
-                    if (acx >= 0 && acx < MAP_WIDTH && acy >= 0 && acy < MAP_HEIGHT && !world->fog[acy][acx])
-                        render_actor(app, ctx->renderer, a, i, world->num_players);
-                }
+        // Render monsters (only in revealed cells), then players on top (always visible)
+        for (int i = world->num_players; i < world->num_actors; ++i) {
+            Actor* a = &world->actors[i];
+            if (!a->is_dead) {
+                int acx = a->pos.x / 10;
+                int acy = (a->pos.y - 30) / 10;
+                if (acx >= 0 && acx < MAP_WIDTH && acy >= 0 && acy < MAP_HEIGHT && !world->fog[acy][acx])
+                    render_actor(app, ctx->renderer, a, i, world->num_players);
             }
+        }
+        for (int i = 0; i < world->num_players; ++i) {
+            Actor* a = &world->actors[i];
+            if (!a->is_dead)
+                render_actor(app, ctx->renderer, a, i, world->num_players);
         }
     } else {
         for (int y = 0; y < MAP_HEIGHT; ++y)
@@ -1713,6 +1740,7 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                         world.tiles[cy][cx] = TILE_SLIME_DYING;
                     } else {
                         world.tiles[cy][cx] = TILE_MONSTER_DYING;
+                        world.burned[cy][cx] = 1;
                     }
                     world.timer[cy][cx] = 3;
                 }
@@ -1727,8 +1755,8 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
 
         // Campaign: exit or all dead ends round
         // Multiplayer: <= 1 alive ends round
-        if (world.exited && world.round_end_timer == 0) {
-            world.round_end_timer = 60;
+        if (world.exited) {
+            running = false;
         } else if (world.campaign_mode) {
             if (alive_count == 0 && world.round_end_timer == 0)
                 world.round_end_timer = 120;
@@ -2014,16 +2042,6 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
         }
 
         world.round_counter++;
-
-        if (world.darkness) {
-            for (int p = 0; p < world.num_players; p++) {
-                if (!world.actors[p].is_dead) {
-                    int px = world.actors[p].pos.x / 10;
-                    int py = (world.actors[p].pos.y - 30) / 10;
-                    reveal_view(&world, px, py, world.actors[p].facing);
-                }
-            }
-        }
 
         render_world(app, ctx, &world);
 

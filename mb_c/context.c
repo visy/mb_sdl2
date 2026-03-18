@@ -301,12 +301,26 @@ Mix_Chunk* context_load_sample(ApplicationContext* ctx, const char* filename) {
     return chunk;
 }
 
+// Limit how many channels can play the same sample simultaneously
+// to avoid volume stacking/clipping (SDL_mixer adds channels together)
+#define MAX_SAME_SAMPLE_CHANNELS 3
+
+static int count_playing_sample(Mix_Chunk* sample) {
+    int count = 0;
+    for (int ch = 0; ch < 32; ch++) {
+        if (Mix_Playing(ch) && Mix_GetChunk(ch) == sample) count++;
+    }
+    return count;
+}
+
 void context_play_sample(Mix_Chunk* sample) {
-    if (sample) Mix_PlayChannel(-1, sample, 0);
+    if (sample && count_playing_sample(sample) < MAX_SAME_SAMPLE_CHANNELS)
+        Mix_PlayChannel(-1, sample, 0);
 }
 
 void context_play_sample_freq(Mix_Chunk* sample, int frequency) {
     if (!sample) return;
+    if (count_playing_sample(sample) >= MAX_SAME_SAMPLE_CHANNELS) return;
     // The samples are stored as 11025Hz WAV, converted to mixer format by SDL_mixer.
     // To simulate frequency change, we resample: ratio = frequency / 11025.0
     // ratio > 1 = higher pitch (shorter), ratio < 1 = lower pitch (longer)

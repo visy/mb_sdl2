@@ -566,7 +566,7 @@ static void render_level_grid(App* app, ApplicationContext* ctx, int cursor, int
     SDL_Color* pal = app->level_select.palette;
 
     char count_str[32];
-    snprintf(count_str, sizeof(count_str), "%d/%d", pick_count, app->options.rounds);
+    snprintf(count_str, sizeof(count_str), "%d", pick_count);
     render_text(ctx->renderer, &app->font, 15, 15, pal[7], count_str);
 
     int total = app->level_count + 1; // +1 for "Random" at position 0
@@ -721,11 +721,10 @@ static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[
         render_text(ctx->renderer, &app->font, rx + 12, ry + 36, yellow, "READY");
     }
     
-    if (app->options.players == 1) {
-        char rounds_str[32]; snprintf(rounds_str, sizeof(rounds_str), "LVL %d  LIVES %d", app->current_round + 1, app->player_lives);
-        render_text(ctx->renderer, &app->font, 280, 120, white, rounds_str);
-    } else {
-        char rounds_str[32]; snprintf(rounds_str, sizeof(rounds_str), "%d", app->options.rounds - app->current_round);
+    {
+        int total_rounds = (app->options.players == 1) ? 15 : app->options.rounds;
+        int remaining = total_rounds - app->current_round;
+        char rounds_str[32]; snprintf(rounds_str, sizeof(rounds_str), "%d", remaining);
         render_text(ctx->renderer, &app->font, 306, 120, white, rounds_str);
     }
 
@@ -886,6 +885,8 @@ static void app_run_shop(App* app, ApplicationContext* ctx) {
             int batch[2]; int num_panels = 0;
             for (int i = batch_start; i < nplayers && i < batch_start + 2; i++)
                 batch[num_panels++] = i;
+            // Swap so first player is on the right (matching original game)
+            if (num_panels == 2) { int tmp = batch[0]; batch[0] = batch[1]; batch[1] = tmp; }
             if (!app_run_shop_batch(app, ctx, batch, num_panels)) { quit = true; break; }
         }
         if (quit) break;
