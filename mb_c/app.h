@@ -88,6 +88,7 @@ typedef struct {
     Mix_Chunk* sound_explos5;
     Mix_Chunk* sound_pikkupom;
     Mix_Chunk* sound_aargh;
+    Mix_Chunk* sound_urethan;
     Mix_Chunk* sound_applause;
 
     char level_names[128][32];

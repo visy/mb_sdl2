@@ -69,6 +69,9 @@
 #define TILE_SMALL_BOMB2 0x77
 #define TILE_SMALL_BOMB3 0x78
 #define TILE_WEAPONS_CRATE 0x79
+#define TILE_NAPALM_EXTINGUISHED 0x7C
+#define TILE_SMALL_BOMB_EXTINGUISHED 0x7D
+#define TILE_BIG_BOMB_EXTINGUISHED 0x7E
 #define TILE_NAPALM1 0x7F
 #define TILE_LARGE_CRUCIFIX_BOMB 0x80
 #define TILE_PLASTIC_BOMB 0x81
@@ -110,6 +113,7 @@
 #define TILE_GRENADE_FLY_D 0xA7
 #define TILE_GRENADE_FLY_U 0xA8
 #define TILE_METAL_WALL_PLACED 0xA9
+#define TILE_DYNAMITE_EXTINGUISHED 0xAA
 #define TILE_JUMPING_BOMB 0xAB
 #define TILE_BRICK 0xAC
 #define TILE_BRICK_CRACKED_LIGHT 0xAD
@@ -138,7 +142,8 @@ typedef enum {
     ACTOR_FURRY,
     ACTOR_GRENADIER,
     ACTOR_SLIME,
-    ACTOR_ALIEN
+    ACTOR_ALIEN,
+    ACTOR_CLONE
 } ActorKind;
 
 typedef struct {
@@ -158,7 +163,9 @@ typedef struct {
     bool is_dead;
     int selected_weapon;
     ActorKind kind;
+    int clone_owner; // player index for ACTOR_CLONE, -1 otherwise
     bool is_active;
+    int super_drill_count;
 } Actor;
 
 typedef struct {

@@ -151,6 +151,7 @@ bool app_init(App* app, ApplicationContext* ctx) {
                         if (STRICMP(dir->d_name, "EXPLOS2.VOC") == 0) app->sound_explos2 = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "EXPLOS3.VOC") == 0) app->sound_explos3 = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "AARGH.VOC") == 0) app->sound_aargh = app->sounds[app->sound_count];
+                        if (STRICMP(dir->d_name, "URETHAN.VOC") == 0) app->sound_urethan = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "EXPLOS4.VOC") == 0) app->sound_explos4 = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "EXPLOS5.VOC") == 0) app->sound_explos5 = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "APPLAUSE.VOC") == 0) app->sound_applause = app->sounds[app->sound_count];
@@ -684,8 +685,12 @@ static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[
         SDL_Rect rect_name = {35 + stats_x, 16, 56, 8}; SDL_RenderFillRect(ctx->renderer, &rect_name);
         render_text(ctx->renderer, &app->font, 35 + stats_x, 16, white, app->player_name[p_idx]);
 
+        int drill_power = 1 + app->player_inventory[p_idx][EQUIP_SMALL_PICKAXE]
+            + 3 * app->player_inventory[p_idx][EQUIP_LARGE_PICKAXE]
+            + 5 * app->player_inventory[p_idx][EQUIP_DRILL];
+        char power_str[16]; snprintf(power_str, sizeof(power_str), "%d", drill_power);
         SDL_Rect rect_power = {35 + stats_x, 30, 56, 8}; SDL_RenderFillRect(ctx->renderer, &rect_power);
-        render_text(ctx->renderer, &app->font, 35 + stats_x, 30, red, "11");
+        render_text(ctx->renderer, &app->font, 35 + stats_x, 30, red, power_str);
 
         int sel = selected_item[panel];
         if (sel < EQUIP_TOTAL) {

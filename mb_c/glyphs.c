@@ -65,22 +65,25 @@ static SDL_Rect get_glyph_rect(GlyphType type) {
         return r;
     }
 
-    // Player glyphs: walk and dig for players 1-4
-    // Layout: GLYPH_PLAYER_START + player*1000 = walk, GLYPH_PLAYER_DIG_START + player*1000 = dig
+    // Player glyphs: each player has a 1000-wide block starting at GLYPH_PLAYER_START + pi*1000
+    // Walk at offset 0, dig at offset 500 within each block
     static const int player_walk_y[] = {10, 0, 30, 40};
     static const int player_dig_x[]  = {160, 0, 0, 160};
     static const int player_dig_y[]  = {200, 200, 210, 210};
 
     for (int pi = 3; pi >= 0; pi--) {
-        if ((int)type >= GLYPH_PLAYER_DIG_START + pi * 1000) {
-            int p_idx = type - (GLYPH_PLAYER_DIG_START + pi * 1000);
+        int block_base = GLYPH_PLAYER_START + pi * 1000;
+        if ((int)type >= block_base + 500) {
+            // Dig sprite
+            int p_idx = type - (block_base + 500);
             int dir = p_idx % 4, anim = (p_idx / 4) % 4;
             r.x = player_dig_x[pi] + dir * 40 + anim * 10;
             r.y = player_dig_y[pi];
             return r;
         }
-        if ((int)type >= GLYPH_PLAYER_START + pi * 1000) {
-            int p_idx = type - (GLYPH_PLAYER_START + pi * 1000);
+        if ((int)type >= block_base) {
+            // Walk sprite
+            int p_idx = type - block_base;
             int dir = p_idx % 4, anim = (p_idx / 4) % 4;
             r.x = 160 + dir * 40 + anim * 10;
             r.y = player_walk_y[pi];

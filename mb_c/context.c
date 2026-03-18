@@ -4,6 +4,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// Track resampled chunks per channel so we can free them when done
+static Mix_Chunk* channel_resampled[32] = {0};
+
+static void channel_finished_callback(int channel) {
+    if (channel >= 0 && channel < 32 && channel_resampled[channel]) {
+        free(channel_resampled[channel]->abuf);
+        free(channel_resampled[channel]);
+        channel_resampled[channel] = NULL;
+    }
+}
+
 static void build_path(const char* dir, const char* filename, char* out, size_t size) {
 #ifdef _WIN32
     snprintf(out, size, "%s\\%s", dir, filename);
@@ -51,6 +62,7 @@ void context_init(ApplicationContext* ctx, const char* game_dir) {
     }
     Mix_AllocateChannels(32);
     Mix_Volume(-1, 24);
+    Mix_ChannelFinished(channel_finished_callback);
 }
 
 void context_destroy(ApplicationContext* ctx) {
@@ -294,11 +306,60 @@ void context_play_sample(Mix_Chunk* sample) {
 }
 
 void context_play_sample_freq(Mix_Chunk* sample, int frequency) {
-    if (sample) {
-        int channel = Mix_PlayChannel(-1, sample, 0);
-        if (channel != -1) {
-            Mix_SetPanning(channel, 255, 255);
-        }
+    if (!sample) return;
+    // The samples are stored as 11025Hz WAV, converted to mixer format by SDL_mixer.
+    // To simulate frequency change, we resample: ratio = frequency / 11025.0
+    // ratio > 1 = higher pitch (shorter), ratio < 1 = lower pitch (longer)
+    if (frequency <= 0) frequency = 11025;
+    double ratio = (double)frequency / 11025.0;
+
+    // For near-normal frequency, skip resampling
+    if (ratio > 0.95 && ratio < 1.05) {
+        Mix_PlayChannel(-1, sample, 0);
+        return;
     }
-    (void)frequency; 
+
+    // Query mixer format to know sample size
+    int mixer_freq, mixer_channels;
+    Uint16 mixer_format;
+    Mix_QuerySpec(&mixer_freq, &mixer_format, &mixer_channels);
+    int bytes_per_sample = (mixer_format & 0xFF) / 8 * mixer_channels;
+    if (bytes_per_sample == 0) bytes_per_sample = 4; // fallback: 16-bit stereo
+
+    int src_samples = sample->alen / bytes_per_sample;
+    int dst_samples = (int)(src_samples / ratio);
+    if (dst_samples <= 0) return;
+
+    Uint32 dst_len = dst_samples * bytes_per_sample;
+    Uint8* dst_buf = malloc(dst_len);
+    if (!dst_buf) return;
+
+    // Nearest-neighbor resample
+    for (int i = 0; i < dst_samples; i++) {
+        int src_idx = (int)(i * ratio);
+        if (src_idx >= src_samples) src_idx = src_samples - 1;
+        memcpy(dst_buf + i * bytes_per_sample,
+               sample->abuf + src_idx * bytes_per_sample,
+               bytes_per_sample);
+    }
+
+    Mix_Chunk* resampled = malloc(sizeof(Mix_Chunk));
+    if (!resampled) { free(dst_buf); return; }
+    resampled->allocated = 1;
+    resampled->abuf = dst_buf;
+    resampled->alen = dst_len;
+    resampled->volume = sample->volume;
+
+    int channel = Mix_PlayChannel(-1, resampled, 0);
+    if (channel == -1) {
+        free(dst_buf);
+        free(resampled);
+    } else if (channel >= 0 && channel < 32) {
+        // Free any previous resampled chunk on this channel
+        if (channel_resampled[channel]) {
+            free(channel_resampled[channel]->abuf);
+            free(channel_resampled[channel]);
+        }
+        channel_resampled[channel] = resampled;
+    }
 }

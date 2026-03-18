@@ -29,20 +29,21 @@ static const int DYNAMITE_PATTERN[][2] = {
 // ==================== Tile helpers ====================
 
 bool is_passable(uint8_t val) {
-    return val == TILE_PASSAGE || val == TILE_TELEPORT || val == TILE_BLOOD
-        || val == TILE_EXPLOSION || val == TILE_SMOKE1 || val == TILE_SMOKE2
-        || (val >= 0x3A && val <= 0x40) || val == TILE_SLIME_CORPSE
-        || val == TILE_EXIT || val == TILE_MINE;
+    return val == TILE_PASSAGE || val == TILE_BLOOD || val == TILE_SLIME_CORPSE;
+}
+
+// Burned border rendering checks if cell looks "open"
+static bool is_open_for_border(uint8_t val) {
+    return is_passable(val) || val == TILE_EXPLOSION || val == TILE_SMOKE1 || val == TILE_SMOKE2;
 }
 
 static bool is_treasure(uint8_t val) {
     if (val == TILE_DIAMOND) return true;
     if (val >= TILE_GOLD_SHIELD && val <= TILE_GOLD_CROWN) return true;
-    if (val == TILE_MEDIKIT || val == TILE_WEAPONS_CRATE || val == TILE_LIFE_ITEM) return true;
-    if (val >= TILE_SMALL_PICKAXE && val <= TILE_DRILL) return true;
-    if (val == TILE_BUTTON_OFF || val == (TILE_BUTTON_OFF + 1)) return true;
     return false;
 }
+
+
 
 static int get_treasure_value(uint8_t val) {
     if (val == TILE_GOLD_SHIELD) return 15;
@@ -94,7 +95,9 @@ static bool is_bomb(uint8_t val) {
         || val == TILE_SMALL_CRUCIFIX_BOMB || val == TILE_LARGE_CRUCIFIX_BOMB
         || val == TILE_PLASTIC_BOMB || val == TILE_EXPLOSIVE_PLASTIC_BOMB
         || val == TILE_DIGGER_BOMB || val == TILE_NAPALM1 || val == TILE_NAPALM2
-        || val == TILE_JUMPING_BOMB || val == TILE_EXPLOSIVE_PLASTIC;
+        || val == TILE_JUMPING_BOMB || val == TILE_EXPLOSIVE_PLASTIC
+        || val == TILE_SMALL_BOMB_EXTINGUISHED || val == TILE_BIG_BOMB_EXTINGUISHED
+        || val == TILE_DYNAMITE_EXTINGUISHED || val == TILE_NAPALM_EXTINGUISHED;
 }
 
 static bool is_small_radio(uint8_t val) {
@@ -186,6 +189,12 @@ static void reveal_view(World* world, int px, int py, Direction facing) {
 
 // ==================== Explosions ====================
 
+static int explosion_chain_count = 0;
+static App* explosion_app = NULL; // set before chain explosion starts
+static bool explosion_nuke_sound_played = false;
+
+static void explode_bomb(World* world, int cx, int cy);
+
 static void apply_explosion_damage(World* world, int cx, int cy, int dmg) {
     for (int i = 0; i < world->num_actors; ++i) {
         Actor* actor = &world->actors[i];
@@ -215,13 +224,9 @@ static void explode_cell_ex(World* world, int cx, int cy, int dmg, bool heavy) {
     if (cy < MAP_HEIGHT - 1 && !is_passable(world->tiles[cy+1][cx])) world->burned[cy][cx] |= BURNED_D;
 
     if (is_bomb(val)) {
-        if (world->timer[cy][cx] > 0) {
-            world->timer[cy][cx] = 1;
-            return;
-        } else {
-            world->tiles[cy][cx] = TILE_EXPLOSION;
-            world->timer[cy][cx] = 3;
-        }
+        // Immediately trigger the bomb (matching Rust's immediate dispatch)
+        explode_bomb(world, cx, cy);
+        return;
     } else if (is_stone(val) || val == TILE_BOULDER) {
         if (heavy) {
             world->tiles[cy][cx] = TILE_EXPLOSION;
@@ -343,6 +348,98 @@ static bool expand_passable(uint8_t val) {
     return is_passable(val);
 }
 
+static bool is_flame_passable(uint8_t val) {
+    return is_passable(val)
+        || val == TILE_SMOKE1 || val == TILE_SMOKE2
+        || val == TILE_BIOMASS
+        || (val >= TILE_EXPLOSION && val <= TILE_MONSTER_SMOKE2)
+        || val == TILE_PLASTIC;
+}
+
+static void activate_flamethrower(World* world, int cx, int cy, Direction facing, int player_cx, int player_cy) {
+    // Directional cone expansion matching Rust FlamethrowerExpansion
+    // Uses marker-based wave expansion: MARKER1 = already processed, MARKER2 = newly expanded
+    // Direction: forward always, backward never, perpendicular only within cone (delta*2 <= main_dist)
+    int dx = (facing == DIR_RIGHT) ? 1 : (facing == DIR_LEFT) ? -1 : 0;
+    int dy = (facing == DIR_DOWN) ? 1 : (facing == DIR_UP) ? -1 : 0;
+
+    // Start one cell ahead if passable
+    int start_x = cx, start_y = cy;
+    int nx = cx + dx, ny = cy + dy;
+    if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT && is_flame_passable(world->tiles[ny][nx])) {
+        start_x = nx; start_y = ny;
+    }
+
+    // Use hits array temporarily as markers (save/restore)
+    // Simpler: use a static array
+    static uint8_t marker[MAP_HEIGHT][MAP_WIDTH];
+    memset(marker, 0, sizeof(marker));
+    #define FLAME_MARK1 1
+    #define FLAME_MARK2 2
+
+    marker[start_y][start_x] = FLAME_MARK1;
+    int expanded = 0;
+    int dirs_dx[] = {1, -1, 0, 0};
+    int dirs_dy[] = {0, 0, -1, 1};
+    Direction dirs[] = {DIR_RIGHT, DIR_LEFT, DIR_UP, DIR_DOWN};
+
+    while (expanded < 30) {
+        bool spread = false;
+        for (int y = 1; y < MAP_HEIGHT - 1; y++) {
+            for (int x = 1; x < MAP_WIDTH - 1; x++) {
+                if (marker[y][x] != FLAME_MARK1) continue;
+                for (int d = 0; d < 4; d++) {
+                    int nnx = x + dirs_dx[d], nny = y + dirs_dy[d];
+                    if (nnx < 1 || nnx >= MAP_WIDTH - 1 || nny < 1 || nny >= MAP_HEIGHT - 1) continue;
+                    if (marker[nny][nnx] != 0) continue;
+                    uint8_t val = world->tiles[nny][nnx];
+                    if (!is_flame_passable(val)) continue;
+
+                    // Direction check: forward=ok, backward=no, perpendicular=cone
+                    Direction expand_dir = dirs[d];
+                    if (expand_dir == facing) {
+                        // forward: always ok
+                    } else if ((facing == DIR_LEFT && expand_dir == DIR_RIGHT) ||
+                               (facing == DIR_RIGHT && expand_dir == DIR_LEFT) ||
+                               (facing == DIR_UP && expand_dir == DIR_DOWN) ||
+                               (facing == DIR_DOWN && expand_dir == DIR_UP)) {
+                        continue; // backward: never
+                    } else {
+                        // perpendicular: cone check
+                        int delta_row = abs(nny - start_y);
+                        int delta_col = abs(nnx - start_x);
+                        if (expand_dir == DIR_UP || expand_dir == DIR_DOWN) {
+                            if (delta_row * 2 > delta_col) continue;
+                        } else {
+                            if (delta_col * 2 > delta_row) continue;
+                        }
+                    }
+
+                    marker[nny][nnx] = FLAME_MARK2;
+                    expanded++;
+                    spread = true;
+                }
+            }
+        }
+        if (!spread) break;
+        // Convert MARK2 to MARK1 for next wave
+        for (int y = 0; y < MAP_HEIGHT; y++)
+            for (int x = 0; x < MAP_WIDTH; x++)
+                if (marker[y][x] == FLAME_MARK2) marker[y][x] = FLAME_MARK1;
+    }
+
+    // Finalize: explode all marked cells (skip player's own cell)
+    for (int y = 0; y < MAP_HEIGHT; y++)
+        for (int x = 0; x < MAP_WIDTH; x++)
+            if (marker[y][x] == FLAME_MARK1) {
+                world->tiles[y][x] = TILE_PASSAGE;
+                if (x == player_cx && y == player_cy) continue;
+                explode_cell_ex(world, x, y, 34, true);
+            }
+    #undef FLAME_MARK1
+    #undef FLAME_MARK2
+}
+
 static bool expand_napalm(uint8_t val) {
     return val == TILE_PASSAGE || val == TILE_SMOKE1 || val == TILE_SMOKE2
         || val == TILE_BLOOD || val == TILE_BIOMASS || val == TILE_EXPLOSION
@@ -438,6 +535,73 @@ static void explode_jumping_bomb(World* world, int cx, int cy, App* app) {
     }
 }
 
+static void explode_bomb(World* world, int cx, int cy) {
+    if (explosion_chain_count > 200) return;
+    explosion_chain_count++;
+    uint8_t t = world->tiles[cy][cx];
+    App* app = explosion_app;
+
+    // Clear tile first so it doesn't get re-triggered
+    world->tiles[cy][cx] = TILE_PASSAGE;
+    world->timer[cy][cx] = 0;
+
+    if (t == TILE_SMALL_BOMB1 || t == TILE_SMALL_BOMB2 || t == TILE_SMALL_BOMB3
+        || t == TILE_MINE || t == TILE_SMALL_BOMB_EXTINGUISHED) {
+        if (app && app->sound_pikkupom) context_play_sample_freq(app->sound_pikkupom, 11000);
+        explode_pattern(world, cx, cy, 60, SMALL_BOMB_PATTERN, sizeof(SMALL_BOMB_PATTERN)/sizeof(SMALL_BOMB_PATTERN[0]));
+    } else if (t == TILE_BIG_BOMB1 || t == TILE_BIG_BOMB2 || t == TILE_BIG_BOMB3
+               || is_small_radio(t) || t == TILE_BIG_BOMB_EXTINGUISHED) {
+        if (app && app->sound_explos1) context_play_sample_freq(app->sound_explos1, 11000);
+        explode_pattern(world, cx, cy, 84, BIG_BOMB_PATTERN, sizeof(BIG_BOMB_PATTERN)/sizeof(BIG_BOMB_PATTERN[0]));
+    } else if (t == TILE_EXPLOSIVE_PLASTIC) {
+        if (app && app->sound_explos1) context_play_sample_freq(app->sound_explos1, 11000);
+        explode_pattern(world, cx, cy, 84, BIG_BOMB_PATTERN, sizeof(BIG_BOMB_PATTERN)/sizeof(BIG_BOMB_PATTERN[0]));
+    } else if (t == TILE_DYNAMITE1 || t == TILE_DYNAMITE2 || t == TILE_DYNAMITE3
+               || is_big_radio(t) || t == TILE_DYNAMITE_EXTINGUISHED) {
+        if (app && app->sound_explos2) context_play_sample_freq(app->sound_explos2, 11000);
+        explode_pattern(world, cx, cy, 100, DYNAMITE_PATTERN, sizeof(DYNAMITE_PATTERN)/sizeof(DYNAMITE_PATTERN[0]));
+    } else if (t == TILE_ATOMIC1 || t == TILE_ATOMIC2 || t == TILE_ATOMIC3) {
+        explode_nuke(world, cx, cy);
+        if (app && app->sound_explos3 && !explosion_nuke_sound_played) {
+            context_play_sample_freq(app->sound_explos3, 5000);
+            context_play_sample_freq(app->sound_explos3, 9900);
+            context_play_sample_freq(app->sound_explos3, 10000);
+            explosion_nuke_sound_played = true;
+        }
+    } else if (t == TILE_BARREL) {
+        world->tiles[cy][cx] = t; // restore for explode_barrel
+        explode_barrel(world, cx, cy, app);
+    } else if (t == TILE_SMALL_CRUCIFIX_BOMB) {
+        explode_crucifix(world, cx, cy, true, app);
+    } else if (t == TILE_LARGE_CRUCIFIX_BOMB) {
+        explode_crucifix(world, cx, cy, false, app);
+    } else if (t == TILE_PLASTIC_BOMB) {
+        expand_fill(world, cx, cy, 45, expand_passable, finalize_plastic, NULL);
+        if (app && app->sound_urethan) context_play_sample_freq(app->sound_urethan, 11000);
+    } else if (t == TILE_EXPLOSIVE_PLASTIC_BOMB) {
+        expand_fill(world, cx, cy, 50, expand_passable, finalize_explosive_plastic, NULL);
+        if (app && app->sound_urethan) context_play_sample_freq(app->sound_urethan, 11000);
+    } else if (t == TILE_DIGGER_BOMB) {
+        expand_fill(world, cx, cy, 75, expand_digger, finalize_digger, NULL);
+        if (app && app->sound_explos2) context_play_sample_freq(app->sound_explos2, 11000);
+    } else if (t == TILE_NAPALM1 || t == TILE_NAPALM2 || t == TILE_NAPALM_EXTINGUISHED) {
+        expand_fill(world, cx, cy, 75, expand_napalm, finalize_napalm, NULL);
+        if (app && app->sound_explos5) context_play_sample_freq(app->sound_explos5, 11000);
+    } else if (t == TILE_JUMPING_BOMB) {
+        world->tiles[cy][cx] = t; // restore for explode_jumping_bomb
+        explode_jumping_bomb(world, cx, cy, app);
+    } else if (t == TILE_GRENADE_FLY_R || t == TILE_GRENADE_FLY_L
+               || t == TILE_GRENADE_FLY_D || t == TILE_GRENADE_FLY_U) {
+        // Grenade hit by explosion: explode as small bomb
+        if (app && app->sound_pikkupom) context_play_sample_freq(app->sound_pikkupom, 11000);
+        explode_pattern(world, cx, cy, 60, SMALL_BOMB_PATTERN, sizeof(SMALL_BOMB_PATTERN)/sizeof(SMALL_BOMB_PATTERN[0]));
+    } else {
+        // Unknown bomb type: generic explosion
+        world->tiles[cy][cx] = TILE_EXPLOSION;
+        world->timer[cy][cx] = 3;
+    }
+}
+
 // ==================== Tile initialization ====================
 
 static int get_initial_hits(uint8_t val) {
@@ -472,6 +636,7 @@ static int monster_speed(ActorKind kind) {
         case ACTOR_GRENADIER: return 3;
         case ACTOR_SLIME: return 2;
         case ACTOR_ALIEN: return 100;
+        case ACTOR_CLONE: return 100;
         default: return 1;
     }
 }
@@ -482,6 +647,7 @@ static int monster_damage(ActorKind kind) {
         case ACTOR_GRENADIER: return 3;
         case ACTOR_SLIME: return 1;
         case ACTOR_ALIEN: return 5;
+        case ACTOR_CLONE: return 1;
         default: return 0;
     }
 }
@@ -688,7 +854,7 @@ static bool monster_can_move(Actor* actor, World* world) {
     }
     if (ncx < 0 || ncx >= MAP_WIDTH || ncy < 0 || ncy >= MAP_HEIGHT) return false;
     uint8_t val = world->tiles[ncy][ncx];
-    return is_passable(val) || is_treasure(val);
+    return is_passable(val) || is_sand(val) || is_treasure(val);
 }
 
 static void monster_head_to_target(Actor* actor, int tx, int ty, World* world) {
@@ -751,6 +917,8 @@ static void monster_damage_players(World* world, int actor_idx) {
         Actor* player = &world->actors[p];
         if (player->is_dead) continue;
         if (p == 0 && world->god_mode) continue;
+        // Clone doesn't hurt its owner (or anyone in campaign mode)
+        if (monster->kind == ACTOR_CLONE && (monster->clone_owner == p || world->campaign_mode)) continue;
         int pcx = player->pos.x / 10;
         int pcy = (player->pos.y - 30) / 10;
         if (pcx == mcx && pcy == mcy) {
@@ -801,7 +969,8 @@ static void monster_detect_players(World* world) {
             if (player->is_dead) continue;
             int pcx = player->pos.x / 10;
             int pcy = (player->pos.y - 30) / 10;
-            bool detected = (abs(mcx - pcx) < 20 && abs(mcy - pcy) < 20)
+            bool proximity = (abs(m->pos.x - player->pos.x) < 20 && abs(m->pos.y - player->pos.y) < 20);
+            bool detected = proximity
                 || in_direct_sight(world, mcy, mcx, pcy, pcx)
                 || in_fov_sight(mcy, mcx, pcy, pcx, m->facing);
             if (detected) {
@@ -832,7 +1001,7 @@ static void grenadier_maybe_throw(World* world, int actor_idx) {
         if (!is_passable(world->tiles[sy][sx])) break;
         dist++;
     }
-    if (dist < 4) return;
+    if (dist <= 4) return;
 
     // Check if any player is on same row or column
     for (int p = 0; p < world->num_players; p++) {
@@ -848,10 +1017,8 @@ static void grenadier_maybe_throw(World* world, int actor_idx) {
                 case DIR_DOWN:  gval = TILE_GRENADE_FLY_D; break;
                 case DIR_UP:    gval = TILE_GRENADE_FLY_U; break;
             }
-            if (world->tiles[mcy][mcx] == TILE_PASSAGE || world->tiles[mcy][mcx] == TILE_BLOOD) {
-                world->tiles[mcy][mcx] = gval;
-                world->timer[mcy][mcx] = 1;
-            }
+            world->tiles[mcy][mcx] = gval;
+            world->timer[mcy][mcx] = 1;
             break;
         }
     }
@@ -869,17 +1036,18 @@ static void animate_monster(World* world, int idx) {
     int d_dir = 0, d_ortho = 0;
     bool finishing = false;
 
+    bool boundary_ok = false;
     switch (actor->facing) {
-        case DIR_LEFT:  d_dir = dx; d_ortho = dy; finishing = dx > 5; break;
-        case DIR_RIGHT: d_dir = dx; d_ortho = dy; finishing = dx < 5; break;
-        case DIR_UP:    d_dir = dy; d_ortho = dx; finishing = dy > 5; break;
-        case DIR_DOWN:  d_dir = dy; d_ortho = dx; finishing = dy < 5; break;
+        case DIR_LEFT:  d_dir = dx; d_ortho = dy; finishing = dx > 5; boundary_ok = actor->pos.x > 5; break;
+        case DIR_RIGHT: d_dir = dx; d_ortho = dy; finishing = dx < 5; boundary_ok = actor->pos.x < 635; break;
+        case DIR_UP:    d_dir = dy; d_ortho = dx; finishing = dy > 5; boundary_ok = actor->pos.y > 35; break;
+        case DIR_DOWN:  d_dir = dy; d_ortho = dx; finishing = dy < 5; boundary_ok = actor->pos.y < 475; break;
     }
 
     int ncx = cx + (actor->facing == DIR_RIGHT ? 1 : (actor->facing == DIR_LEFT ? -1 : 0));
     int ncy = cy + (actor->facing == DIR_DOWN ? 1 : (actor->facing == DIR_UP ? -1 : 0));
 
-    bool can_move = d_ortho > 3 && d_ortho < 6;
+    bool can_move = boundary_ok && d_ortho > 3 && d_ortho < 6;
     if (can_move && ncx >= 0 && ncx < MAP_WIDTH && ncy >= 0 && ncy < MAP_HEIGHT) {
         uint8_t next_val = world->tiles[ncy][ncx];
         if (finishing || is_passable(next_val)) {
@@ -897,12 +1065,12 @@ static void animate_monster(World* world, int idx) {
         else actor->pos.y = ((actor->pos.y - 30) / 10) * 10 + 35;
     }
 
-    // Interact with map when centered
+    // Interact with map when centered (matching Rust interact_map for monsters)
     if (d_dir == 5 && ncx >= 0 && ncx < MAP_WIDTH && ncy >= 0 && ncy < MAP_HEIGHT) {
         uint8_t val = world->tiles[ncy][ncx];
         if (is_diggable(val) && world->hits[ncy][ncx] < 30000) {
             world->hits[ncy][ncx] -= actor->drilling;
-            if (is_stone(val)) {
+            if (is_stone(val) || val == TILE_STONE_CRACKED_LIGHT) {
                 if (world->hits[ncy][ncx] < 500) world->tiles[ncy][ncx] = TILE_STONE_CRACKED_HEAVY;
                 else if (world->hits[ncy][ncx] < 1000) world->tiles[ncy][ncx] = TILE_STONE_CRACKED_LIGHT;
             } else if (is_brick(val)) {
@@ -913,21 +1081,76 @@ static void animate_monster(World* world, int idx) {
                 world->tiles[ncy][ncx] = TILE_PASSAGE;
                 world->hits[ncy][ncx] = 0;
             }
+        } else if (is_treasure(val) || val == TILE_DIAMOND
+                   || (val >= TILE_SMALL_PICKAXE && val <= TILE_DRILL)) {
+            // Monsters collect treasure and pickaxes (increases their drilling)
+            int drill_value = 0;
+            if (val == TILE_SMALL_PICKAXE) drill_value = 1;
+            else if (val == TILE_LARGE_PICKAXE) drill_value = 3;
+            else if (val == TILE_DRILL) drill_value = 5;
+            actor->drilling += drill_value;
+            // Clones share drilling with their owner
+            if (actor->kind == ACTOR_CLONE && actor->clone_owner >= 0 && actor->clone_owner < world->num_players) {
+                world->actors[actor->clone_owner].drilling += drill_value;
+            }
+            world->tiles[ncy][ncx] = TILE_PASSAGE;
+            world->hits[ncy][ncx] = 0;
         } else if (val == TILE_MINE) {
             world->timer[ncy][ncx] = 1;
+        } else if (is_pushable(val)) {
+            // Monsters can push objects
+            int pcx = ncx + (actor->facing == DIR_RIGHT ? 1 : (actor->facing == DIR_LEFT ? -1 : 0));
+            int pcy = ncy + (actor->facing == DIR_DOWN ? 1 : (actor->facing == DIR_UP ? -1 : 0));
+            if (world->hits[ncy][ncx] == 30000) {
+                // Metal wall, can't push
+            } else if (world->hits[ncy][ncx] > 1) {
+                world->hits[ncy][ncx] -= actor->drilling;
+            } else if (pcx >= 0 && pcx < MAP_WIDTH && pcy >= 0 && pcy < MAP_HEIGHT && is_passable(world->tiles[pcy][pcx])) {
+                bool blocked = false;
+                for (int ai = 0; ai < world->num_actors; ai++) {
+                    if (world->actors[ai].is_dead) continue;
+                    if (world->actors[ai].pos.x / 10 == pcx && (world->actors[ai].pos.y - 30) / 10 == pcy) { blocked = true; break; }
+                }
+                if (!blocked) {
+                    world->tiles[pcy][pcx] = world->tiles[ncy][ncx];
+                    world->timer[pcy][pcx] = world->timer[ncy][ncx];
+                    world->hits[pcy][pcx] = 24;
+                    world->tiles[ncy][ncx] = TILE_PASSAGE;
+                    world->timer[ncy][ncx] = 0;
+                    world->hits[ncy][ncx] = 0;
+                }
+            }
+        } else if (val == TILE_BUTTON_OFF) {
+            if (world->timer[ncy][ncx] <= 1) open_doors(world);
+        } else if (val == TILE_BUTTON_OFF + 1) {
+            if (world->timer[ncy][ncx] <= 1) close_doors(world);
+        } else if (val == TILE_TELEPORT) {
+            // Monsters can use teleporters
+            int tele[256][2], nt = 0;
+            for (int ty = 0; ty < MAP_HEIGHT; ty++)
+                for (int tx = 0; tx < MAP_WIDTH; tx++)
+                    if (world->tiles[ty][tx] == TILE_TELEPORT && (tx != ncx || ty != ncy)) {
+                        tele[nt][0] = tx; tele[nt][1] = ty; nt++;
+                    }
+            if (nt > 0) {
+                int r = rand() % nt;
+                actor->pos.x = tele[r][0] * 10 + 5;
+                actor->pos.y = tele[r][1] * 10 + 35;
+            }
+        } else if (val == TILE_MEDIKIT) {
+            // Monsters destroy medikits but don't heal (player-only in Rust)
+            world->tiles[ncy][ncx] = TILE_PASSAGE;
         }
     }
 
-    actor->animation_timer++;
-    if (actor->animation_timer >= 4) {
-        actor->animation = (actor->animation + 1) % 4;
-        actor->animation_timer = 0;
-    }
+    actor->animation = (actor->animation + 1) % 30;
 }
 
 static void animate_monsters(World* world, App* app) {
     (void)app;
-    monster_detect_players(world);
+    if (world->round_counter % 5 == 0) {
+        monster_detect_players(world);
+    }
 
     for (int i = world->num_players; i < world->num_actors; i++) {
         Actor* m = &world->actors[i];
@@ -960,6 +1183,8 @@ static void animate_monsters(World* world, App* app) {
                 int best_px = -1, best_py = -1;
                 for (int p = 0; p < world->num_players; p++) {
                     if (world->actors[p].is_dead) continue;
+                    // Clone doesn't chase its owner (or anyone in campaign)
+                    if (m->kind == ACTOR_CLONE && (m->clone_owner == p || world->campaign_mode)) continue;
                     int pcx = world->actors[p].pos.x / 10;
                     int pcy = (world->actors[p].pos.y - 30) / 10;
                     int d = abs(mcx - pcx) + abs(mcy - pcy);
@@ -971,6 +1196,29 @@ static void animate_monsters(World* world, App* app) {
                 }
                 if (best_px >= 0) {
                     monster_head_to_target(m, best_px, best_py, world);
+                    // Clones throw grenades when locked on a target
+                    if (m->kind == ACTOR_CLONE) {
+                        grenadier_maybe_throw(world, i);
+                    }
+                } else if (m->kind == ACTOR_CLONE) {
+                    // Clones look for gold when no player target
+                    int gold_dist = 999;
+                    int gold_x = -1, gold_y = -1;
+                    for (int gy = mcy - 7; gy <= mcy + 7; gy++) {
+                        for (int gx = mcx - 7; gx <= mcx + 7; gx++) {
+                            if (gx >= 0 && gx < MAP_WIDTH && gy >= 0 && gy < MAP_HEIGHT && is_treasure(world->tiles[gy][gx])) {
+                                int gd = abs(mcx - gx) + abs(mcy - gy);
+                                if (gd < gold_dist) {
+                                    gold_dist = gd;
+                                    gold_x = gx;
+                                    gold_y = gy;
+                                }
+                            }
+                        }
+                    }
+                    if (gold_x >= 0) {
+                        monster_head_to_target(m, gold_x, gold_y, world);
+                    }
                 }
 
                 if (m->kind == ACTOR_GRENADIER) {
@@ -993,19 +1241,20 @@ static void render_actor(App* app, SDL_Renderer* renderer, Actor* actor, int act
     if (actor->is_dead) return;
     int glyph;
     if (actor_idx < num_players) {
-        int base = actor->is_digging ? GLYPH_PLAYER_DIG_START : GLYPH_PLAYER_START;
-        base += actor_idx * 1000;
-        int anim_frame = 0;
-        if (actor->is_digging) {
-            static const int pp[] = {0, 1, 2, 3, 2, 1};
-            anim_frame = pp[actor->animation % 6];
-        } else {
-            anim_frame = actor->animation % 4;
-        }
+        int base = GLYPH_PLAYER_START + actor_idx * 1000 + (actor->is_digging ? 500 : 0);
+        static const int phase_map[] = {0, 1, 2, 3, 2, 1};
+        int anim_frame = actor->moving ? phase_map[actor->animation / 5] : 0;
+        glyph = base + (int)actor->facing + (anim_frame * 4);
+    } else if (actor->kind == ACTOR_CLONE) {
+        int pi = actor->clone_owner;
+        int base = GLYPH_PLAYER_START + pi * 1000 + (actor->is_digging ? 500 : 0);
+        static const int phase_map[] = {0, 1, 2, 3, 2, 1};
+        int anim_frame = actor->moving ? phase_map[actor->animation / 5] : 0;
         glyph = base + (int)actor->facing + (anim_frame * 4);
     } else {
         int base = (int)monster_glyph_base(actor->kind);
-        int anim_frame = actor->animation % 4;
+        static const int phase_map[] = {0, 1, 2, 3, 2, 1};
+        int anim_frame = actor->moving ? phase_map[actor->animation / 5] : 0;
         glyph = base + (int)actor->facing + (anim_frame * 4);
     }
     glyphs_render(&app->glyphs, renderer, actor->pos.x - 5, actor->pos.y - 5, (GlyphType)glyph);
@@ -1016,7 +1265,7 @@ static void render_burned_borders(App* app, SDL_Renderer* renderer, World* world
     int px = x * 10;
     int py = y * 10 + 30;
 
-    if (val == TILE_EXPLOSION || val == TILE_SMOKE1 || val == TILE_SMOKE2 || is_passable(val)) {
+    if (val == TILE_EXPLOSION || val == TILE_SMOKE1 || val == TILE_SMOKE2 || is_open_for_border(val)) {
         uint8_t b = (val == TILE_EXPLOSION) ? 0xF : world->burned[y][x];
         if (b & BURNED_L && x > 0) {
             uint8_t n = world->tiles[y][x-1];
@@ -1116,13 +1365,18 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
                 if (!world->fog[y][x])
                     render_burned_borders(app, ctx->renderer, world, x, y);
 
-        for (int i = 0; i < world->num_actors; ++i) {
-            Actor* a = &world->actors[i];
-            if (!a->is_dead) {
-                int acx = a->pos.x / 10;
-                int acy = (a->pos.y - 30) / 10;
-                if (acx >= 0 && acx < MAP_WIDTH && acy >= 0 && acy < MAP_HEIGHT && !world->fog[acy][acx])
-                    render_actor(app, ctx->renderer, a, i, world->num_players);
+        // Render monsters first, then players on top
+        for (int pass = 0; pass < 2; pass++) {
+            int start = pass == 0 ? world->num_players : 0;
+            int end = pass == 0 ? world->num_actors : world->num_players;
+            for (int i = start; i < end; ++i) {
+                Actor* a = &world->actors[i];
+                if (!a->is_dead) {
+                    int acx = a->pos.x / 10;
+                    int acy = (a->pos.y - 30) / 10;
+                    if (acx >= 0 && acx < MAP_WIDTH && acy >= 0 && acy < MAP_HEIGHT && !world->fog[acy][acx])
+                        render_actor(app, ctx->renderer, a, i, world->num_players);
+                }
             }
         }
     } else {
@@ -1134,12 +1388,14 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
             for (int x = 0; x < MAP_WIDTH; ++x)
                 render_burned_borders(app, ctx->renderer, world, x, y);
 
-        for (int i = 0; i < world->num_actors; ++i)
+        // Render monsters first, then players on top
+        for (int i = world->num_players; i < world->num_actors; ++i)
+            render_actor(app, ctx->renderer, &world->actors[i], i, world->num_players);
+        for (int i = 0; i < world->num_players; ++i)
             render_actor(app, ctx->renderer, &world->actors[i], i, world->num_players);
     }
 
     SDL_SetRenderTarget(ctx->renderer, NULL);
-    context_present(ctx);
 }
 
 // ==================== Player interaction with map tiles ====================
@@ -1147,16 +1403,24 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
 static void player_interact_tile(App* app, World* world, int p, int ncx, int ncy) {
     uint8_t val = world->tiles[ncy][ncx];
 
+    // Treasures
+    if (val >= TILE_GOLD_SHIELD && val <= TILE_GOLD_CROWN) {
+        app->player_cash[p] += get_treasure_value(val);
+        world->tiles[ncy][ncx] = TILE_PASSAGE;
+        context_play_sample_freq(app->sound_kili, 10000 + (rand() % 5000));
+        return;
+    }
+    if (val == TILE_DIAMOND) {
+        app->player_cash[p] += 1000;
+        world->tiles[ncy][ncx] = TILE_PASSAGE;
+        context_play_sample_freq(app->sound_kili, 10000 + (rand() % 5000));
+        return;
+    }
+
     // Pickaxe/drill items
     if (val == TILE_SMALL_PICKAXE) { world->actors[p].drilling += 1; world->tiles[ncy][ncx] = TILE_PASSAGE; context_play_sample(app->sound_picaxe); return; }
     if (val == TILE_LARGE_PICKAXE) { world->actors[p].drilling += 3; world->tiles[ncy][ncx] = TILE_PASSAGE; context_play_sample(app->sound_picaxe); return; }
     if (val == TILE_DRILL) { world->actors[p].drilling += 5; world->tiles[ncy][ncx] = TILE_PASSAGE; context_play_sample(app->sound_picaxe); return; }
-
-    // Mine
-    if (val == TILE_MINE) {
-        world->timer[ncy][ncx] = 1;
-        return;
-    }
 
     // Medikit
     if (val == TILE_MEDIKIT) {
@@ -1200,22 +1464,6 @@ static void player_interact_tile(App* app, World* world, int p, int ncx, int ncy
         context_play_sample(app->sound_picaxe);
         return;
     }
-
-    // Exit tile (campaign only)
-    if (val == TILE_EXIT && world->campaign_mode) {
-        world->exited = true;
-        return;
-    }
-
-    // Button
-    if (val == TILE_BUTTON_OFF) {
-        if (world->timer[ncy][ncx] <= 1) open_doors(world);
-        return;
-    }
-    if (val == TILE_BUTTON_OFF + 1) { // ButtonOn
-        if (world->timer[ncy][ncx] <= 1) close_doors(world);
-        return;
-    }
 }
 
 // ==================== Main game loop ====================
@@ -1244,12 +1492,16 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
         int armor = app->player_inventory[p][EQUIP_ARMOR];
         world.actors[p].max_health = 100 + 100 * armor;
         world.actors[p].health = world.actors[p].max_health;
-        world.actors[p].drilling = app->player_inventory[p][EQUIP_SMALL_PICKAXE]
+        world.actors[p].drilling = 1 + app->player_inventory[p][EQUIP_SMALL_PICKAXE]
             + 3 * app->player_inventory[p][EQUIP_LARGE_PICKAXE]
             + 5 * app->player_inventory[p][EQUIP_DRILL];
     }
 
+    Uint32 round_start = SDL_GetTicks();
+    Uint32 round_time_ms = (Uint32)app->options.round_time_secs * 1000;
+
     bool running = true, quit_requested = false;
+    explosion_app = app;
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -1272,44 +1524,66 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                         case ACT_STOP:  actor->moving = false; break;
                         case ACT_ACTION: {
                             int cx = actor->pos.x / 10;
-                            int cy = (actor->pos.y - 35) / 10;
+                            int cy = (actor->pos.y - 30) / 10;
                             if (cx >= 0 && cx < MAP_WIDTH && cy >= 0 && cy < MAP_HEIGHT) {
                                 int w = actor->selected_weapon;
                                 // Non-placeable items: use immediately
                                 if (w == EQUIP_FLAMETHROWER && app->player_inventory[p][w] > 0) {
-                                    // Flamethrower: expand explosion in facing direction
                                     app->player_inventory[p][w]--;
-                                    int dx = (actor->facing == DIR_RIGHT) ? 1 : (actor->facing == DIR_LEFT) ? -1 : 0;
-                                    int dy = (actor->facing == DIR_DOWN) ? 1 : (actor->facing == DIR_UP) ? -1 : 0;
-                                    int fx = cx + dx, fy = cy + dy;
-                                    for (int i = 0; i < 20; i++) {
-                                        if (fx < 0 || fx >= MAP_WIDTH || fy < 0 || fy >= MAP_HEIGHT) break;
-                                        uint8_t fv = world.tiles[fy][fx];
-                                        if (fv == TILE_WALL || fv == TILE_DOOR) break;
-                                        explode_cell_ex(&world, fx, fy, 100, true);
-                                        fx += dx; fy += dy;
-                                    }
-                                    if (app->sound_explos1) context_play_sample_freq(app->sound_explos1, 11000);
+                                    activate_flamethrower(&world, cx, cy, actor->facing, cx, cy);
+                                    if (app->sound_explos4) context_play_sample_freq(app->sound_explos4, 11000);
                                 } else if (w == EQUIP_EXTINGUISHER && app->player_inventory[p][w] > 0) {
                                     app->player_inventory[p][w]--;
-                                    int dx = (actor->facing == DIR_RIGHT) ? 1 : (actor->facing == DIR_LEFT) ? -1 : 0;
-                                    int dy = (actor->facing == DIR_DOWN) ? 1 : (actor->facing == DIR_UP) ? -1 : 0;
-                                    int fx = cx + dx, fy = cy + dy;
+                                    int edx = (actor->facing == DIR_RIGHT) ? 1 : (actor->facing == DIR_LEFT) ? -1 : 0;
+                                    int edy = (actor->facing == DIR_DOWN) ? 1 : (actor->facing == DIR_UP) ? -1 : 0;
+                                    int fx = cx + edx, fy = cy + edy;
                                     for (int i = 0; i < 6; i++) {
                                         if (fx < 0 || fx >= MAP_WIDTH || fy < 0 || fy >= MAP_HEIGHT) break;
-                                        if (!is_passable(world.tiles[fy][fx]) && !is_bomb(world.tiles[fy][fx])) break;
-                                        world.timer[fy][fx] = 0;
-                                        if (is_bomb(world.tiles[fy][fx])) world.hits[fy][fx] = 20;
-                                        fx += dx; fy += dy;
+                                        uint8_t ev = world.tiles[fy][fx];
+                                        if (is_bomb(ev) && ev != TILE_GRENADE_FLY_R && ev != TILE_GRENADE_FLY_L
+                                            && ev != TILE_GRENADE_FLY_U && ev != TILE_GRENADE_FLY_D) {
+                                            world.timer[fy][fx] = 0;
+                                            world.hits[fy][fx] = 20;
+                                            // Convert to extinguished variants
+                                            if (ev == TILE_DYNAMITE1 || ev == TILE_DYNAMITE2 || ev == TILE_DYNAMITE3)
+                                                world.tiles[fy][fx] = TILE_DYNAMITE_EXTINGUISHED;
+                                            else if (ev == TILE_BIG_BOMB1 || ev == TILE_BIG_BOMB2 || ev == TILE_BIG_BOMB3)
+                                                world.tiles[fy][fx] = TILE_BIG_BOMB_EXTINGUISHED;
+                                            else if (ev == TILE_SMALL_BOMB1 || ev == TILE_SMALL_BOMB2 || ev == TILE_SMALL_BOMB3)
+                                                world.tiles[fy][fx] = TILE_SMALL_BOMB_EXTINGUISHED;
+                                            else if (ev == TILE_NAPALM1 || ev == TILE_NAPALM2)
+                                                world.tiles[fy][fx] = TILE_NAPALM_EXTINGUISHED;
+                                        } else if (is_passable(ev)) {
+                                            world.tiles[fy][fx] = TILE_SMOKE1;
+                                            world.timer[fy][fx] = 3;
+                                        } else {
+                                            break; // Hit wall or non-passable non-bomb
+                                        }
+                                        fx += edx; fy += edy;
                                     }
                                 } else if (w == EQUIP_ARMOR) {
                                     // Armor is passive - does nothing on action
-                                } else if (w == EQUIP_SUPER_DRILL && app->player_inventory[p][w] > 0) {
+                                } else if (w == EQUIP_SUPER_DRILL && app->player_inventory[p][w] > 0 && actor->super_drill_count == 0) {
                                     app->player_inventory[p][w]--;
+                                    actor->super_drill_count = 10;
                                     actor->drilling += 300;
                                 } else if (w == EQUIP_CLONE && app->player_inventory[p][w] > 0 && world.num_actors < MAX_ACTORS) {
                                     app->player_inventory[p][w]--;
-                                    // Spawn clone at player position (acts as monster ally - simplified)
+                                    Actor* clone = &world.actors[world.num_actors];
+                                    memset(clone, 0, sizeof(Actor));
+                                    clone->kind = ACTOR_CLONE;
+                                    clone->clone_owner = p;
+                                    clone->facing = DIR_RIGHT;
+                                    clone->moving = true;
+                                    clone->max_health = 100;
+                                    clone->health = 100;
+                                    clone->pos.x = actor->pos.x / 10 * 10 + 5;
+                                    clone->pos.y = (actor->pos.y - 30) / 10 * 10 + 35;
+                                    clone->drilling = actor->drilling;
+                                    if (actor->super_drill_count > 0) clone->drilling -= 300;
+                                    clone->animation = 1;
+                                    clone->is_active = true;
+                                    world.num_actors++;
                                 } else if (app->player_inventory[p][w] > 0 && (world.tiles[cy][cx] == TILE_PASSAGE || is_treasure(world.tiles[cy][cx]))) {
                                     // Placeable weapons
                                     uint8_t tile = 0; int timer = 0; bool place = true;
@@ -1347,12 +1621,21 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                                         case EQUIP_BARREL: tile = TILE_BARREL; timer = 0; break;
                                         case EQUIP_SMALL_CRUCIFIX: tile = TILE_SMALL_CRUCIFIX_BOMB; timer = 100; break;
                                         case EQUIP_LARGE_CRUCIFIX: tile = TILE_LARGE_CRUCIFIX_BOMB; timer = 100; break;
-                                        case EQUIP_PLASTIC: tile = TILE_PLASTIC_BOMB; timer = 100; break;
-                                        case EQUIP_EXPLOSIVE_PLASTIC: tile = TILE_EXPLOSIVE_PLASTIC_BOMB; timer = 90; break;
+                                        case EQUIP_PLASTIC:
+                                            tile = TILE_PLASTIC_BOMB; timer = 100;
+                                            if (app->sound_urethan) context_play_sample_freq(app->sound_urethan, 11000);
+                                            break;
+                                        case EQUIP_EXPLOSIVE_PLASTIC:
+                                            tile = TILE_EXPLOSIVE_PLASTIC_BOMB; timer = 90;
+                                            if (app->sound_urethan) context_play_sample_freq(app->sound_urethan, 11000);
+                                            break;
                                         case EQUIP_DIGGER: tile = TILE_DIGGER_BOMB; timer = 100; break;
                                         case EQUIP_METAL_WALL: tile = TILE_METAL_WALL_PLACED; timer = 1; break;
                                         case EQUIP_TELEPORT: tile = TILE_TELEPORT; timer = 0; break;
-                                        case EQUIP_BIOMASS: tile = TILE_BIOMASS; timer = rand() % 80; break;
+                                        case EQUIP_BIOMASS:
+                                            tile = TILE_BIOMASS; timer = rand() % 80;
+                                            if (app->sound_urethan) context_play_sample_freq(app->sound_urethan, 11000);
+                                            break;
                                         case EQUIP_JUMPING_BOMB:
                                             tile = TILE_JUMPING_BOMB; timer = 80 + rand() % 80;
                                             break;
@@ -1369,15 +1652,12 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                             }
                         } break;
                         case ACT_CYCLE: {
-                            int total_inv = 0;
-                            for (int i = 0; i < EQUIP_TOTAL; i++) total_inv += app->player_inventory[p][i];
-                            if (total_inv > 0) {
-                                for (int i = 1; i < EQUIP_TOTAL; ++i) {
-                                    int w = (actor->selected_weapon + i) % EQUIP_TOTAL;
-                                    if (app->player_inventory[p][w] > 0) {
-                                        actor->selected_weapon = w;
-                                        break;
-                                    }
+                            for (int i = 1; i < EQUIP_TOTAL; ++i) {
+                                int w = (actor->selected_weapon + i) % EQUIP_TOTAL;
+                                if (w == EQUIP_SMALL_PICKAXE || w == EQUIP_LARGE_PICKAXE || w == EQUIP_DRILL || w == EQUIP_ARMOR) continue;
+                                if (app->player_inventory[p][w] > 0) {
+                                    actor->selected_weapon = w;
+                                    break;
                                 }
                             }
                         } break;
@@ -1461,8 +1741,10 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
             if (world.round_end_timer == 0) running = false;
         }
 
-        // Player movement
+        // Player movement (super drill = double speed via 2 iterations)
         for (int p = 0; p < world.num_players; p++) {
+          int move_iters = (world.actors[p].super_drill_count > 0) ? 2 : 1;
+          for (int mi = 0; mi < move_iters; mi++) {
             Actor* actor = &world.actors[p];
             actor->is_digging = false;
             if (actor->moving && !actor->is_dead) {
@@ -1474,149 +1756,132 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                 int d_dir = 0, d_ortho = 0;
                 bool finishing = false;
 
+                bool can_move = true;
                 switch (actor->facing) {
-                    case DIR_LEFT:  d_dir = dx; d_ortho = dy; finishing = dx > 5; break;
-                    case DIR_RIGHT: d_dir = dx; d_ortho = dy; finishing = dx < 5; break;
-                    case DIR_UP:    d_dir = dy; d_ortho = dx; finishing = dy > 5; break;
-                    case DIR_DOWN:  d_dir = dy; d_ortho = dx; finishing = dy < 5; break;
+                    case DIR_LEFT:  d_dir = dx; d_ortho = dy; finishing = dx > 5; can_move = actor->pos.x > 5; break;
+                    case DIR_RIGHT: d_dir = dx; d_ortho = dy; finishing = dx < 5; can_move = actor->pos.x < 635; break;
+                    case DIR_UP:    d_dir = dy; d_ortho = dx; finishing = dy > 5; can_move = actor->pos.y > 35; break;
+                    case DIR_DOWN:  d_dir = dy; d_ortho = dx; finishing = dy < 5; can_move = actor->pos.y < 475; break;
                     default: break;
                 }
 
                 int ncx = cx + (actor->facing == DIR_RIGHT ? 1 : (actor->facing == DIR_LEFT ? -1 : 0));
                 int ncy = cy + (actor->facing == DIR_DOWN ? 1 : (actor->facing == DIR_UP ? -1 : 0));
 
-                if (d_ortho == 5 && (finishing || (ncx >= 0 && ncx < MAP_WIDTH && ncy >= 0 && ncy < MAP_HEIGHT && (is_passable(world.tiles[ncy][ncx]) || is_treasure(world.tiles[ncy][ncx]))))) {
+                // Step forward if possible (matching Rust animate_actor)
+                bool is_moving = can_move && d_ortho > 3 && d_ortho < 6;
+                uint8_t map_value = (ncx >= 0 && ncx < MAP_WIDTH && ncy >= 0 && ncy < MAP_HEIGHT) ? world.tiles[ncy][ncx] : TILE_WALL;
+                if (is_moving && (finishing || is_passable(map_value))) {
                     if (actor->facing == DIR_LEFT) actor->pos.x--;
                     else if (actor->facing == DIR_RIGHT) actor->pos.x++;
                     else if (actor->facing == DIR_UP) actor->pos.y--;
                     else if (actor->facing == DIR_DOWN) actor->pos.y++;
+                }
 
-                    int new_cx = actor->pos.x / 10;
-                    int new_cy = (actor->pos.y - 30) / 10;
-                    int c_dx = actor->pos.x % 10;
-                    int c_dy = (actor->pos.y - 30) % 10;
-
-                    // Collect treasures in overlapping cell
-                    if (c_dx != 5 || c_dy != 5) {
-                        int tcx = new_cx, tcy = new_cy;
-                        if (actor->facing == DIR_LEFT && c_dx < 5) tcx--;
-                        else if (actor->facing == DIR_RIGHT && c_dx > 5) tcx++;
-                        else if (actor->facing == DIR_UP && c_dy < 5) tcy--;
-                        else if (actor->facing == DIR_DOWN && c_dy > 5) tcy++;
-                        if (tcx >= 0 && tcx < MAP_WIDTH && tcy >= 0 && tcy < MAP_HEIGHT) {
-                            uint8_t tv = world.tiles[tcy][tcx];
-                            if (tv >= TILE_GOLD_SHIELD && tv <= TILE_GOLD_CROWN) {
-                                app->player_cash[p] += get_treasure_value(tv);
-                                world.tiles[tcy][tcx] = TILE_PASSAGE;
-                                context_play_sample_freq(app->sound_kili, 10000 + (rand() % 5000));
-                            } else if (tv == TILE_DIAMOND) {
-                                app->player_cash[p] += 1000;
-                                world.tiles[tcy][tcx] = TILE_PASSAGE;
-                                context_play_sample_freq(app->sound_kili, 10000 + (rand() % 5000));
-                            }
-                        }
-                    }
-
-                    // Interact with treasure in current cell
-                    uint8_t cur_tile = world.tiles[new_cy][new_cx];
-                    if (cur_tile >= TILE_GOLD_SHIELD && cur_tile <= TILE_GOLD_CROWN) {
-                        app->player_cash[p] += get_treasure_value(cur_tile);
-                        world.tiles[new_cy][new_cx] = TILE_PASSAGE;
-                        context_play_sample_freq(app->sound_kili, 10000 + (rand() % 5000));
-                    } else if (cur_tile == TILE_DIAMOND) {
-                        app->player_cash[p] += 1000;
-                        world.tiles[new_cy][new_cx] = TILE_PASSAGE;
-                        context_play_sample_freq(app->sound_kili, 10000 + (rand() % 5000));
-                    }
-
-                    // Interact with special tiles when centered
-                    if (c_dx == 5 && c_dy == 5) {
-                        player_interact_tile(app, &world, p, new_cx, new_cy);
-
-                        // Teleporter
-                        if (world.tiles[new_cy][new_cx] == TILE_TELEPORT) {
-                            int tele[256][2], nt = 0;
-                            for (int ty = 0; ty < MAP_HEIGHT; ty++)
-                                for (int tx = 0; tx < MAP_WIDTH; tx++)
-                                    if (world.tiles[ty][tx] == TILE_TELEPORT && (tx != new_cx || ty != new_cy)) {
-                                        tele[nt][0] = tx; tele[nt][1] = ty; nt++;
-                                    }
-                            if (nt > 0) {
-                                int r = rand() % nt;
-                                actor->pos.x = tele[r][0] * 10 + 5;
-                                actor->pos.y = tele[r][1] * 10 + 35;
-                                actor->moving = false;
-                                context_play_sample(app->sound_kili);
-                            }
-                        }
-                    }
-
-                    actor->animation_timer++;
-                    if (actor->animation_timer >= 4) {
-                        actor->animation = (actor->animation + 1) % 4;
-                        actor->animation_timer = 0;
-                    }
-                } else if (d_ortho == 5 && d_dir == 5) {
-                    if (ncx >= 0 && ncx < MAP_WIDTH && ncy >= 0 && ncy < MAP_HEIGHT) {
-                        uint8_t target = world.tiles[ncy][ncx];
-                        if (is_diggable(target)) {
-                            actor->is_digging = true;
-                            world.hits[ncy][ncx] -= actor->drilling;
-                            if (is_stone(target)) {
-                                if (world.hits[ncy][ncx] < 500) world.tiles[ncy][ncx] = TILE_STONE_CRACKED_HEAVY;
-                                else if (world.hits[ncy][ncx] < 1000) world.tiles[ncy][ncx] = TILE_STONE_CRACKED_LIGHT;
-                            } else if (target == TILE_STONE_CRACKED_LIGHT) {
-                                if (world.hits[ncy][ncx] < 500) world.tiles[ncy][ncx] = TILE_STONE_CRACKED_HEAVY;
-                            } else if (is_brick(target)) {
-                                if (world.hits[ncy][ncx] <= 2000) world.tiles[ncy][ncx] = TILE_BRICK_CRACKED_HEAVY;
-                                else if (world.hits[ncy][ncx] <= 4000) world.tiles[ncy][ncx] = TILE_BRICK_CRACKED_LIGHT;
-                            }
-                            if (world.hits[ncy][ncx] <= 0) {
-                                world.tiles[ncy][ncx] = TILE_PASSAGE;
-                                actor->is_digging = false;
-                            }
-                            actor->animation_timer++;
-                            if (actor->animation_timer >= 8) {
-                                actor->animation = (actor->animation + 1) % 6;
-                                actor->animation_timer = 0;
-                                if ((actor->animation % 6) == 3) context_play_sample_freq(app->sound_picaxe, 10500 + (rand() % 1000));
-                            }
-                        } else if (is_pushable(target)) {
-                            if (world.hits[ncy][ncx] > 1) {
-                                world.hits[ncy][ncx] -= actor->drilling;
-                            } else {
-                                int pcx = ncx + (actor->facing == DIR_RIGHT ? 1 : (actor->facing == DIR_LEFT ? -1 : 0));
-                                int pcy = ncy + (actor->facing == DIR_DOWN ? 1 : (actor->facing == DIR_UP ? -1 : 0));
-                                if (pcx >= 0 && pcx < MAP_WIDTH && pcy >= 0 && pcy < MAP_HEIGHT && is_passable(world.tiles[pcy][pcx])) {
-                                    // Check no actor blocking destination
-                                    bool blocked = false;
-                                    for (int ai = 0; ai < world.num_actors; ai++) {
-                                        if (world.actors[ai].is_dead) continue;
-                                        if (world.actors[ai].pos.x / 10 == pcx && (world.actors[ai].pos.y - 30) / 10 == pcy) { blocked = true; break; }
-                                    }
-                                    if (!blocked) {
-                                        world.tiles[pcy][pcx] = world.tiles[ncy][ncx];
-                                        world.timer[pcy][pcx] = world.timer[ncy][ncx];
-                                        world.hits[pcy][pcx] = 24;
-                                        world.tiles[ncy][ncx] = TILE_PASSAGE;
-                                        world.timer[ncy][ncx] = 0;
-                                        world.hits[ncy][ncx] = 0;
-                                    } else {
-                                        world.hits[ncy][ncx] = 24;
-                                    }
-                                } else world.hits[ncy][ncx] = 24;
-                            }
-                            actor->animation_timer++;
-                            if (actor->animation_timer >= 8) { actor->animation = (actor->animation + 1) % 4; actor->animation_timer = 0; }
-                        } else if (target == TILE_WALL || target == TILE_DOOR) {
-                            actor->moving = false;
-                        }
-                    }
-                } else if (d_ortho != 5) {
+                // Center orthogonal position
+                if (d_ortho != 5) {
                     if (actor->facing == DIR_UP || actor->facing == DIR_DOWN) actor->pos.x = (actor->pos.x / 10) * 10 + 5;
                     else actor->pos.y = ((actor->pos.y - 30) / 10) * 10 + 35;
                 }
+
+                // Interact with next cell when centered in direction of travel (Rust: interact_map)
+                if (d_dir == 5 && ncx >= 0 && ncx < MAP_WIDTH && ncy >= 0 && ncy < MAP_HEIGHT) {
+                    uint8_t target = world.tiles[ncy][ncx];
+
+                    if (is_passable(target)) {
+                        // Reveal fog in darkness mode
+                        if (world.darkness) {
+                            int pcx = actor->pos.x / 10;
+                            int pcy = (actor->pos.y - 30) / 10;
+                            reveal_view(&world, pcx, pcy, actor->facing);
+                        }
+                    } else if (is_treasure(target) || (target >= TILE_SMALL_PICKAXE && target <= TILE_DRILL)) {
+                        // Gold, diamonds, pickaxes, drills — collected instantly
+                        player_interact_tile(app, &world, p, ncx, ncy);
+                    } else if (target == TILE_WEAPONS_CRATE || target == TILE_MEDIKIT || target == TILE_LIFE_ITEM) {
+                        // Items collected instantly
+                        player_interact_tile(app, &world, p, ncx, ncy);
+                    } else if (target == TILE_MINE) {
+                        // Activate mine
+                        world.timer[ncy][ncx] = 1;
+                    } else if (target == TILE_TELEPORT) {
+                        // Teleporter — move to a random other teleporter
+                        int tele[256][2], nt = 0;
+                        for (int ty = 0; ty < MAP_HEIGHT; ty++)
+                            for (int tx = 0; tx < MAP_WIDTH; tx++)
+                                if (world.tiles[ty][tx] == TILE_TELEPORT && (tx != ncx || ty != ncy)) {
+                                    tele[nt][0] = tx; tele[nt][1] = ty; nt++;
+                                }
+                        if (nt > 0) {
+                            int r = rand() % nt;
+                            actor->pos.x = tele[r][0] * 10 + 5;
+                            actor->pos.y = tele[r][1] * 10 + 35;
+                            actor->moving = false;
+                            context_play_sample(app->sound_kili);
+                        }
+                    } else if (target == TILE_EXIT && world.campaign_mode) {
+                        world.exited = true;
+                    } else if (target == TILE_BUTTON_OFF) {
+                        if (world.timer[ncy][ncx] <= 1) open_doors(&world);
+                    } else if (target == TILE_BUTTON_OFF + 1) {
+                        if (world.timer[ncy][ncx] <= 1) close_doors(&world);
+                    } else if (is_diggable(target) && world.hits[ncy][ncx] < 30000) {
+                        // Digging — pickaxe animation only for hard materials
+                        bool is_hard = is_stone(target) || is_brick(target)
+                            || (target >= TILE_STONE_TOP_LEFT && target <= TILE_STONE_BOTTOM_RIGHT)
+                            || target == TILE_STONE_BOTTOM_LEFT
+                            || target == TILE_STONE_CRACKED_LIGHT || target == TILE_STONE_CRACKED_HEAVY
+                            || target == TILE_BRICK_CRACKED_LIGHT || target == TILE_BRICK_CRACKED_HEAVY;
+                        actor->is_digging = is_hard;
+                        world.hits[ncy][ncx] -= actor->drilling;
+                        if (is_stone(target)) {
+                            if (world.hits[ncy][ncx] < 500) world.tiles[ncy][ncx] = TILE_STONE_CRACKED_HEAVY;
+                            else if (world.hits[ncy][ncx] < 1000) world.tiles[ncy][ncx] = TILE_STONE_CRACKED_LIGHT;
+                        } else if (target == TILE_STONE_CRACKED_LIGHT) {
+                            if (world.hits[ncy][ncx] < 500) world.tiles[ncy][ncx] = TILE_STONE_CRACKED_HEAVY;
+                        } else if (is_brick(target)) {
+                            if (world.hits[ncy][ncx] <= 2000) world.tiles[ncy][ncx] = TILE_BRICK_CRACKED_HEAVY;
+                            else if (world.hits[ncy][ncx] <= 4000) world.tiles[ncy][ncx] = TILE_BRICK_CRACKED_LIGHT;
+                        }
+                        if (world.hits[ncy][ncx] <= 0) {
+                            world.tiles[ncy][ncx] = TILE_PASSAGE;
+                            actor->is_digging = false;
+                        }
+                    } else if (is_pushable(target)) {
+                        if (world.hits[ncy][ncx] > 1) {
+                            world.hits[ncy][ncx] -= actor->drilling;
+                        } else {
+                            int pcx = ncx + (actor->facing == DIR_RIGHT ? 1 : (actor->facing == DIR_LEFT ? -1 : 0));
+                            int pcy = ncy + (actor->facing == DIR_DOWN ? 1 : (actor->facing == DIR_UP ? -1 : 0));
+                            if (pcx >= 0 && pcx < MAP_WIDTH && pcy >= 0 && pcy < MAP_HEIGHT && is_passable(world.tiles[pcy][pcx])) {
+                                bool blocked = false;
+                                for (int ai = 0; ai < world.num_actors; ai++) {
+                                    if (world.actors[ai].is_dead) continue;
+                                    if (world.actors[ai].pos.x / 10 == pcx && (world.actors[ai].pos.y - 30) / 10 == pcy) { blocked = true; break; }
+                                }
+                                if (!blocked) {
+                                    world.tiles[pcy][pcx] = world.tiles[ncy][ncx];
+                                    world.timer[pcy][pcx] = world.timer[ncy][ncx];
+                                    world.hits[pcy][pcx] = 24;
+                                    world.tiles[ncy][ncx] = TILE_PASSAGE;
+                                    world.timer[ncy][ncx] = 0;
+                                    world.hits[ncy][ncx] = 0;
+                                } else {
+                                    world.hits[ncy][ncx] = 24;
+                                }
+                            } else world.hits[ncy][ncx] = 24;
+                        }
+                    } else if (target == TILE_WALL || target == TILE_DOOR) {
+                        actor->moving = false;
+                    }
+                }
+
+                // Animation update
+                actor->animation %= 30;
+                if (actor->is_digging && actor->animation == 16) context_play_sample_freq(app->sound_picaxe, 11000 + (rand() % 100));
+                actor->animation++;
             } else { actor->animation = 0; }
+          }
         }
 
         // Monster AI and movement
@@ -1629,46 +1894,41 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                     world.timer[y][x]--;
                     if (world.timer[y][x] == 0) {
                         uint8_t t = world.tiles[y][x];
-                        if (t == TILE_SMALL_BOMB3 || t == TILE_MINE) {
-                            if (app->sound_pikkupom) context_play_sample_freq(app->sound_pikkupom, 11000);
-                            explode_pattern(&world, x, y, 60, SMALL_BOMB_PATTERN, sizeof(SMALL_BOMB_PATTERN)/sizeof(SMALL_BOMB_PATTERN[0]));
-                        } else if (t == TILE_BIG_BOMB3 || is_small_radio(t) || t == TILE_EXPLOSIVE_PLASTIC) {
-                            // Big bomb pattern: big bomb, small radios, explosive plastic
-                            if (app->sound_explos1) context_play_sample_freq(app->sound_explos1, 11000);
-                            explode_pattern(&world, x, y, 84, BIG_BOMB_PATTERN, sizeof(BIG_BOMB_PATTERN)/sizeof(BIG_BOMB_PATTERN[0]));
-                        } else if (t == TILE_DYNAMITE3 || is_big_radio(t)) {
-                            // Dynamite pattern: dynamite, big radios
-                            if (app->sound_explos2) context_play_sample_freq(app->sound_explos2, 11000);
-                            explode_pattern(&world, x, y, 100, DYNAMITE_PATTERN, sizeof(DYNAMITE_PATTERN)/sizeof(DYNAMITE_PATTERN[0]));
-                        } else if (t == TILE_ATOMIC1 || t == TILE_ATOMIC2 || t == TILE_ATOMIC3) {
-                            world.tiles[y][x] = TILE_PASSAGE;
-                            explode_nuke(&world, x, y);
-                            if (app->sound_explos3) {
-                                context_play_sample_freq(app->sound_explos3, 5000);
-                                context_play_sample_freq(app->sound_explos3, 9900);
-                                context_play_sample_freq(app->sound_explos3, 10000);
-                            }
-                        } else if (t == TILE_BARREL) {
-                            explode_barrel(&world, x, y, app);
+                        if (is_bomb(t)) {
+                            explosion_chain_count = 0;
+                            explosion_nuke_sound_played = false;
+                            explode_bomb(&world, x, y);
                         } else if (t == TILE_GRENADE_FLY_R || t == TILE_GRENADE_FLY_L || t == TILE_GRENADE_FLY_D || t == TILE_GRENADE_FLY_U) {
-                            if (app->sound_pikkupom) context_play_sample_freq(app->sound_pikkupom, 11000);
-                            explode_pattern(&world, x, y, 60, SMALL_BOMB_PATTERN, sizeof(SMALL_BOMB_PATTERN)/sizeof(SMALL_BOMB_PATTERN[0]));
-                        } else if (t == TILE_SMALL_CRUCIFIX_BOMB) {
-                            explode_crucifix(&world, x, y, true, app);
-                        } else if (t == TILE_LARGE_CRUCIFIX_BOMB) {
-                            explode_crucifix(&world, x, y, false, app);
-                        } else if (t == TILE_PLASTIC_BOMB) {
-                            expand_fill(&world, x, y, 45, expand_passable, finalize_plastic, NULL);
-                        } else if (t == TILE_EXPLOSIVE_PLASTIC_BOMB) {
-                            expand_fill(&world, x, y, 50, expand_passable, finalize_explosive_plastic, NULL);
-                        } else if (t == TILE_DIGGER_BOMB) {
-                            expand_fill(&world, x, y, 75, expand_digger, finalize_digger, NULL);
-                            if (app->sound_explos2) context_play_sample_freq(app->sound_explos2, 11000);
-                        } else if (t == TILE_NAPALM1 || t == TILE_NAPALM2) {
-                            expand_fill(&world, x, y, 75, expand_napalm, finalize_napalm, NULL);
-                            if (app->sound_explos2) context_play_sample_freq(app->sound_explos2, 11000);
-                        } else if (t == TILE_JUMPING_BOMB) {
-                            explode_jumping_bomb(&world, x, y, app);
+                            // Grenade flies forward; if blocked, explode
+                            int gx = x, gy = y;
+                            if (t == TILE_GRENADE_FLY_R) gx++;
+                            else if (t == TILE_GRENADE_FLY_L) gx--;
+                            else if (t == TILE_GRENADE_FLY_D) gy++;
+                            else if (t == TILE_GRENADE_FLY_U) gy--;
+                            bool can_fly = false;
+                            if (gx >= 0 && gx < MAP_WIDTH && gy >= 0 && gy < MAP_HEIGHT) {
+                                uint8_t next_t = world.tiles[gy][gx];
+                                if (is_passable(next_t) || next_t == t) {
+                                    bool player_blocking = false;
+                                    for (int p = 0; p < world.num_players; p++) {
+                                        if (world.actors[p].is_dead) continue;
+                                        int pcx = world.actors[p].pos.x / 10;
+                                        int pcy = (world.actors[p].pos.y - 30) / 10;
+                                        if (pcx == gx && pcy == gy) { player_blocking = true; break; }
+                                    }
+                                    if (!player_blocking) can_fly = true;
+                                }
+                            }
+                            if (can_fly) {
+                                world.tiles[y][x] = TILE_PASSAGE;
+                                world.tiles[gy][gx] = t;
+                                world.timer[gy][gx] = 2;
+                            } else {
+                                world.tiles[y][x] = TILE_SMALL_BOMB1;
+                                explosion_chain_count = 0;
+                                explosion_nuke_sound_played = false;
+                                explode_bomb(&world, x, y);
+                            }
                         } else if (t == TILE_METAL_WALL_PLACED) {
                             world.tiles[y][x] = TILE_WALL;
                             world.hits[y][x] = 30000;
@@ -1736,24 +1996,18 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                         else if (t == TILE_ATOMIC3) world.tiles[y][x] = TILE_ATOMIC1;
                         else if (t == TILE_NAPALM1) world.tiles[y][x] = TILE_NAPALM2;
                         else if (t == TILE_NAPALM2) world.tiles[y][x] = TILE_NAPALM1;
-                        // Grenades fly in their direction
-                        else if (t == TILE_GRENADE_FLY_R || t == TILE_GRENADE_FLY_L || t == TILE_GRENADE_FLY_D || t == TILE_GRENADE_FLY_U) {
-                            int gx = x, gy = y;
-                            if (t == TILE_GRENADE_FLY_R) gx++;
-                            else if (t == TILE_GRENADE_FLY_L) gx--;
-                            else if (t == TILE_GRENADE_FLY_D) gy++;
-                            else if (t == TILE_GRENADE_FLY_U) gy--;
-                            world.tiles[y][x] = TILE_PASSAGE;
-                            if (gx >= 0 && gx < MAP_WIDTH && gy >= 0 && gy < MAP_HEIGHT && is_passable(world.tiles[gy][gx])) {
-                                world.tiles[gy][gx] = t;
-                                world.timer[gy][gx] = world.timer[y][x];
-                                world.timer[y][x] = 0;
-                            } else {
-                                // Hit wall, explode next frame at current position
-                                world.tiles[y][x] = t;
-                                world.timer[y][x] = 1;
-                            }
-                        }
+                    }
+                }
+            }
+        }
+
+        // Super drill countdown
+        if (world.round_counter % 18 == 0) {
+            for (int p = 0; p < world.num_players; p++) {
+                if (world.actors[p].super_drill_count > 0) {
+                    world.actors[p].super_drill_count--;
+                    if (world.actors[p].super_drill_count == 0) {
+                        world.actors[p].drilling -= 300;
                     }
                 }
             }
@@ -1772,7 +2026,33 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
         }
 
         render_world(app, ctx, &world);
-        SDL_Delay(16);
+
+        // Time bar (multiplayer only) - draw to buffer before present
+        if (!world.campaign_mode && round_time_ms > 0) {
+            Uint32 elapsed = SDL_GetTicks() - round_start;
+            int width = (int)((635ULL * elapsed) / round_time_ms);
+            if (width > 635) width = 635;
+            SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+            // Background bar
+            SDL_Color bg_c = app->players.palette[6];
+            SDL_SetRenderDrawColor(ctx->renderer, bg_c.r, bg_c.g, bg_c.b, 255);
+            SDL_Rect bg_bar = {2, 473, 635, 5};
+            SDL_RenderFillRect(ctx->renderer, &bg_bar);
+            // Progress bar (grows from right)
+            SDL_Color fg_c = app->players.palette[0];
+            SDL_SetRenderDrawColor(ctx->renderer, fg_c.r, fg_c.g, fg_c.b, 255);
+            SDL_Rect fg_bar = {636 - width, 473, width, 5};
+            SDL_RenderFillRect(ctx->renderer, &fg_bar);
+            SDL_SetRenderTarget(ctx->renderer, NULL);
+
+            // End round on time expiry
+            if (elapsed >= round_time_ms) {
+                running = false;
+            }
+        }
+
+        context_present(ctx);
+        SDL_Delay(20);
     }
 
     RoundResult result;
