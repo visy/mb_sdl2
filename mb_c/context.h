@@ -25,7 +25,8 @@ typedef struct {
     s3m_t* music;
     bool music_loaded;
     char current_music[64];
-    SDL_GameController* pad;
+    SDL_GameController* pads[4];
+    int num_pads;
 } ApplicationContext;
 
 

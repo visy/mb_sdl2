@@ -39,10 +39,10 @@ void parse_args(int argc, char** argv, Args* out_args) {
             out_args->campaign_mode = true;
         } else if (strcmp(argv[i], "-w") == 0 || strcmp(argv[i], "--windowed") == 0) {
             out_args->windowed = true;
-        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-?") == 0) {
-            fprintf(stderr, "MineBombers 3.12\n\n");
+        } else if (strcmp(argv[i], "--help") == 0) {
+            fprintf(stderr, "MineBombers 3.11\n\n");
             fprintf(stderr, "USAGE:\n");
-            fprintf(stderr, "    mb [--campaign] [--windowed / -w] [game-path]\n");
+            fprintf(stderr, "    mb-reloaded [--campaign] [-w] [game-path]\n");
             exit(0);
         } else {
             strncpy(out_args->path, argv[i], MAX_PATH - 1);

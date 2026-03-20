@@ -33,11 +33,13 @@ typedef struct {
 typedef struct {
     PlayerInputConfig p[4];
     int axis_state[4][SDL_CONTROLLER_AXIS_MAX];
+    SDL_JoystickID pad_id[4]; // joystick instance ID per player, -1 if none
 } InputConfig;
 
 void input_get_default(InputConfig* config);
 bool input_load_config(InputConfig* config, const char* filename);
 void input_save_config(const InputConfig* config, const char* filename);
+void input_assign_pads(InputConfig* config, SDL_GameController** pads, int num_pads);
 void input_print(const InputConfig* config);
 
 // Helper to check if an event matches an action for a player

@@ -23,6 +23,30 @@ static void build_path(const char* dir, const char* filename, char* out, size_t 
 #endif
 }
 
+// Global event filter: intercepts Alt+Enter for fullscreen toggle from any poll loop
+static ApplicationContext* g_ctx_for_filter = NULL;
+
+static int global_event_filter(void* userdata, SDL_Event* event) {
+    (void)userdata;
+    if (event->type == SDL_QUIT) {
+        exit(0);
+    }
+    if (event->type == SDL_KEYDOWN
+        && event->key.keysym.scancode == SDL_SCANCODE_F4
+        && (event->key.keysym.mod & KMOD_ALT)) {
+        exit(0);
+    }
+    if (event->type == SDL_KEYDOWN
+        && event->key.keysym.scancode == SDL_SCANCODE_RETURN
+        && (event->key.keysym.mod & KMOD_ALT)
+        && g_ctx_for_filter) {
+        context_toggle_fullscreen(g_ctx_for_filter);
+        context_present(g_ctx_for_filter);
+        return 0;
+    }
+    return 1;
+}
+
 static void compute_viewport(ApplicationContext* ctx) {
     int out_w, out_h;
     SDL_GetRendererOutputSize(ctx->renderer, &out_w, &out_h);
@@ -71,21 +95,26 @@ void context_init(ApplicationContext* ctx, const char* game_dir, bool windowed) 
     ctx->renderer = SDL_CreateRenderer(ctx->window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
     if (!ctx->renderer) report_sdl_error("Failed to create renderer");
 
+    g_ctx_for_filter = ctx;
+    SDL_SetEventFilter(global_event_filter, NULL);
+
     compute_viewport(ctx);
 
     ctx->buffer = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, 640, 480);
     
-    ctx->pad = NULL;
-    for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+    ctx->num_pads = 0;
+    memset(ctx->pads, 0, sizeof(ctx->pads));
+    for (int i = 0; i < SDL_NumJoysticks() && ctx->num_pads < 4; ++i) {
         if (SDL_IsGameController(i)) {
-            ctx->pad = SDL_GameControllerOpen(i);
-            if (ctx->pad) {
-                printf("Gamepad detected: %s\n", SDL_GameControllerName(ctx->pad));
-                break;
+            SDL_GameController* gc = SDL_GameControllerOpen(i);
+            if (gc) {
+                printf("Gamepad %d: %s\n", ctx->num_pads + 1, SDL_GameControllerName(gc));
+                ctx->pads[ctx->num_pads++] = gc;
             }
         }
     }
-    if (!ctx->pad) printf("No gamepad detected at startup.\n");
+    if (ctx->num_pads == 0) printf("No gamepads detected at startup.\n");
+    else printf("%d gamepad(s) detected.\n", ctx->num_pads);
     fflush(stdout);
 
     printf("Opening audio device (44100Hz, S16LSB)...\n"); fflush(stdout);
@@ -109,7 +138,8 @@ void context_destroy(ApplicationContext* ctx) {
     if (ctx->buffer) SDL_DestroyTexture(ctx->buffer);
     if (ctx->renderer) SDL_DestroyRenderer(ctx->renderer);
     if (ctx->window) SDL_DestroyWindow(ctx->window);
-    if (ctx->pad) SDL_GameControllerClose(ctx->pad);
+    for (int i = 0; i < ctx->num_pads; i++)
+        if (ctx->pads[i]) SDL_GameControllerClose(ctx->pads[i]);
     Mix_CloseAudio();
     SDL_Quit();
 }
@@ -123,20 +153,20 @@ bool context_poll_events(ApplicationContext* ctx) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) return false;
-        if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_RETURN
-            && (e.key.keysym.mod & KMOD_ALT)) {
-            context_toggle_fullscreen(ctx);
-            continue;
-        }
-        if (e.type == SDL_CONTROLLERDEVICEADDED && !ctx->pad) {
+        if (e.type == SDL_CONTROLLERDEVICEADDED && ctx->num_pads < 4) {
             if (SDL_IsGameController(e.cdevice.which)) {
-                ctx->pad = SDL_GameControllerOpen(e.cdevice.which);
+                SDL_GameController* gc = SDL_GameControllerOpen(e.cdevice.which);
+                if (gc) ctx->pads[ctx->num_pads++] = gc;
             }
-        } else if (e.type == SDL_CONTROLLERDEVICEREMOVED && ctx->pad) {
-            SDL_Joystick* joy = SDL_GameControllerGetJoystick(ctx->pad);
-            if (joy && SDL_JoystickInstanceID(joy) == e.cdevice.which) {
-                SDL_GameControllerClose(ctx->pad);
-                ctx->pad = NULL;
+        } else if (e.type == SDL_CONTROLLERDEVICEREMOVED) {
+            for (int i = 0; i < ctx->num_pads; i++) {
+                SDL_Joystick* joy = SDL_GameControllerGetJoystick(ctx->pads[i]);
+                if (joy && SDL_JoystickInstanceID(joy) == e.cdevice.which) {
+                    SDL_GameControllerClose(ctx->pads[i]);
+                    for (int j = i; j < ctx->num_pads - 1; j++) ctx->pads[j] = ctx->pads[j + 1];
+                    ctx->pads[--ctx->num_pads] = NULL;
+                    break;
+                }
             }
         }
     }
@@ -202,24 +232,22 @@ SDL_Scancode context_wait_key_pressed(ApplicationContext* ctx) {
     while (true) {
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) return SDL_SCANCODE_ESCAPE;
-            if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-                if (e.key.keysym.scancode == SDL_SCANCODE_RETURN && (e.key.keysym.mod & KMOD_ALT)) {
-                    context_toggle_fullscreen(ctx);
-                    context_present(ctx);
-                    continue;
-                }
-                return e.key.keysym.scancode;
-            }
+            if (e.type == SDL_KEYDOWN && !e.key.repeat) return e.key.keysym.scancode;
             
-            if (e.type == SDL_CONTROLLERDEVICEADDED && !ctx->pad) {
+            if (e.type == SDL_CONTROLLERDEVICEADDED && ctx->num_pads < 4) {
                 if (SDL_IsGameController(e.cdevice.which)) {
-                    ctx->pad = SDL_GameControllerOpen(e.cdevice.which);
+                    SDL_GameController* gc = SDL_GameControllerOpen(e.cdevice.which);
+                    if (gc) ctx->pads[ctx->num_pads++] = gc;
                 }
-            } else if (e.type == SDL_CONTROLLERDEVICEREMOVED && ctx->pad) {
-                SDL_Joystick* joy = SDL_GameControllerGetJoystick(ctx->pad);
-                if (joy && SDL_JoystickInstanceID(joy) == e.cdevice.which) {
-                    SDL_GameControllerClose(ctx->pad);
-                    ctx->pad = NULL;
+            } else if (e.type == SDL_CONTROLLERDEVICEREMOVED) {
+                for (int i = 0; i < ctx->num_pads; i++) {
+                    SDL_Joystick* joy = SDL_GameControllerGetJoystick(ctx->pads[i]);
+                    if (joy && SDL_JoystickInstanceID(joy) == e.cdevice.which) {
+                        SDL_GameControllerClose(ctx->pads[i]);
+                        for (int j = i; j < ctx->num_pads - 1; j++) ctx->pads[j] = ctx->pads[j + 1];
+                        ctx->pads[--ctx->num_pads] = NULL;
+                        break;
+                    }
                 }
             }
             

@@ -9,11 +9,69 @@
 #ifdef _WIN32
 #define STRICMP _stricmp
 #define STRNICMP _strnicmp
+#define PATH_SEP '\\'
 #else
 #include <strings.h>
 #define STRICMP strcasecmp
 #define STRNICMP strncasecmp
+#define PATH_SEP '/'
 #endif
+
+static void options_load(GameOptions* o, const char* game_dir) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s%cOPTIONS.CFG", game_dir, PATH_SEP);
+    FILE* f = fopen(path, "rb");
+    if (!f) return;
+    uint8_t buf[17];
+    if (fread(buf, 1, 17, f) != 17) { fclose(f); return; }
+    fclose(f);
+    o->players = buf[0];
+    o->treasures = buf[1];
+    o->rounds = buf[2] | (buf[3] << 8);
+    o->cash = buf[4] | (buf[5] << 8);
+    uint32_t ticks = buf[6] | (buf[7] << 8) | (buf[8] << 16) | (buf[9] << 24);
+    o->round_time_secs = (uint16_t)(ticks * 10 / 182);
+    o->speed = buf[10] | (buf[11] << 8);
+    o->darkness = buf[12] != 0;
+    o->free_market = buf[13] != 0;
+    o->selling = buf[14] != 0;
+    o->win_by_money = buf[15] == 0;
+    o->bomb_damage = buf[16];
+    if (o->players > 4) o->players = 2;
+    if (o->bomb_damage > 100) o->bomb_damage = 100;
+    if (o->rounds > 55) o->rounds = 55;
+    if (o->treasures > 75) o->treasures = 75;
+    if (o->cash > 2650) o->cash = 2650;
+    if (o->speed > 33) o->speed = 33;
+}
+
+static void options_save(const GameOptions* o, const char* game_dir) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s%cOPTIONS.CFG", game_dir, PATH_SEP);
+    uint8_t buf[17];
+    buf[0] = o->players;
+    buf[1] = o->treasures;
+    buf[2] = o->rounds & 0xFF;
+    buf[3] = (o->rounds >> 8) & 0xFF;
+    buf[4] = o->cash & 0xFF;
+    buf[5] = (o->cash >> 8) & 0xFF;
+    uint32_t ticks = (uint32_t)o->round_time_secs * 182 / 10;
+    buf[6] = ticks & 0xFF;
+    buf[7] = (ticks >> 8) & 0xFF;
+    buf[8] = (ticks >> 16) & 0xFF;
+    buf[9] = (ticks >> 24) & 0xFF;
+    buf[10] = o->speed & 0xFF;
+    buf[11] = (o->speed >> 8) & 0xFF;
+    buf[12] = o->darkness ? 1 : 0;
+    buf[13] = o->free_market ? 1 : 0;
+    buf[14] = o->selling ? 1 : 0;
+    buf[15] = o->win_by_money ? 0 : 1;
+    buf[16] = o->bomb_damage;
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(buf, 1, 17, f);
+    fclose(f);
+}
 
 typedef enum {
     MENU_NEW_GAME,
@@ -109,6 +167,7 @@ bool app_init(App* app, ApplicationContext* ctx) {
         fflush(stdout);
         return false;
     }
+    input_assign_pads(&app->input_config, ctx->pads, ctx->num_pads);
     input_print(&app->input_config);
 
     for (int p = 0; p < MAX_PLAYERS; ++p) {
@@ -132,6 +191,8 @@ bool app_init(App* app, ApplicationContext* ctx) {
     app->options.free_market = false;
     app->options.selling = false;
     app->options.win_by_money = true;
+
+    options_load(&app->options, ctx->game_dir);
 
     DIR* d = opendir(ctx->game_dir);
     if (d) {
@@ -554,6 +615,7 @@ static void app_run_options(App* app, ApplicationContext* ctx) {
             running = false;
         }
     }
+    options_save(&app->options, ctx->game_dir);
 }
 
 // ==================== LEVEL SELECTION ====================
@@ -673,8 +735,9 @@ static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[
 
     for (int panel = 0; panel < num_panels; ++panel) {
         int p_idx = shop_players[panel];
-        int stats_x = panel == 0 ? 0 : 420;
-        int items_x = panel * 320;
+        int side = (num_panels == 1) ? 1 : panel; // single player uses right side
+        int stats_x = side == 0 ? 0 : 420;
+        int items_x = side * 320;
 
         char cash_str[32]; snprintf(cash_str, sizeof(cash_str), "%u", app->player_cash[p_idx]);
         SDL_Rect rect_cash = {35 + stats_x, 44, 56, 8}; SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255); SDL_RenderFillRect(ctx->renderer, &rect_cash);
@@ -1080,7 +1143,29 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
                     app->player_rounds_won[p] = 0;
                     memset(app->player_inventory[p], 0, sizeof(app->player_inventory[p]));
                 }
+                // Default: random shuffled levels when none manually selected
+                bool auto_levels = false;
+                if (app->selected_level_count == 0 && app->level_count > 0) {
+                    auto_levels = true;
+                    int count = app->options.rounds;
+                    if (count > 128) count = 128;
+                    int pool[128];
+                    for (int i = 0; i < app->level_count; i++) pool[i] = i;
+                    int filled = 0;
+                    while (filled < count) {
+                        for (int i = app->level_count - 1; i > 0; i--) {
+                            int j = rand() % (i + 1);
+                            int tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+                        }
+                        int take = count - filled;
+                        if (take > app->level_count) take = app->level_count;
+                        for (int i = 0; i < take; i++)
+                            app->selected_levels[filled++] = pool[i] + 1;
+                    }
+                    app->selected_level_count = count;
+                }
                 app_run_shop(app, ctx);
+                if (auto_levels) app->selected_level_count = 0;
             }
         }
         else if (selected == MENU_OPTIONS) app_run_options(app, ctx);
