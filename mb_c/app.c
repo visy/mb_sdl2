@@ -64,6 +64,7 @@ bool app_init(App* app, ApplicationContext* ctx) {
 
     if (!context_load_spy(ctx, "TITLEBE.SPY", &app->title)) return false;
     if (!context_load_spy(ctx, "MAIN3.SPY", &app->main_menu)) return false;
+    context_set_border(ctx, app->main_menu.texture, 30);
     if (!context_load_spy(ctx, "SIKA.SPY", &app->sika)) return false;
     if (!context_load_spy(ctx, "SHOPPIC.SPY", &app->shop)) return false;
     if (!context_load_spy(ctx, "PLAYERS.SPY", &app->players)) return false;
@@ -142,8 +143,7 @@ bool app_init(App* app, ApplicationContext* ctx) {
                 if (app->sound_count < 64) {
                     app->sounds[app->sound_count] = context_load_sample(ctx, dir->d_name);
                     if (app->sounds[app->sound_count]) {
-                        strncpy(app->sound_names[app->sound_count], dir->d_name, 31);
-                        app->sound_names[app->sound_count][31] = '\0';
+                        snprintf(app->sound_names[app->sound_count], 32, "%s", dir->d_name);
                         if (STRICMP(dir->d_name, "KILI.VOC") == 0) app->sound_kili = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "PICAXE.VOC") == 0) app->sound_picaxe = app->sounds[app->sound_count];
                         if (STRICMP(dir->d_name, "PIKKUPOM.VOC") == 0) app->sound_pikkupom = app->sounds[app->sound_count];
@@ -186,8 +186,7 @@ bool app_init(App* app, ApplicationContext* ctx) {
                             app->level_data[app->level_count] = malloc(size);
                             if (app->level_data[app->level_count]) {
                                 fread(app->level_data[app->level_count], 1, size, lf);
-                                strncpy(app->level_names[app->level_count], dir->d_name, 31);
-                                app->level_names[app->level_count][31] = '\0';
+                                snprintf(app->level_names[app->level_count], 32, "%s", dir->d_name);
                                 app->level_count++;
                             }
                         }

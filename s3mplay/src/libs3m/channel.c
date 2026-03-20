@@ -71,13 +71,11 @@ void chn_play_note(s3m_t* s3m, channel_t* chn, uint8_t instr, uint8_t note)
 
         if (instr > 0) {
             uint8_t idx = instr - 1;
-            if (idx < S3M_MAX_INSTRUMENTS) {
-                chn->pi = s3m->instrument[idx];
-                chn->ps = s3m->sample[idx];
-                if (chn->pi) {
-                    if (chn->pi->type == 1) chn->vol = chn->pi->sample.volume;
-                    else chn->vol = chn->pi->adlib.volume;
-                }
+            chn->pi = s3m->instrument[idx];
+            chn->ps = s3m->sample[idx];
+            if (chn->pi) {
+                if (chn->pi->type == 1) chn->vol = chn->pi->sample.volume;
+                else chn->vol = chn->pi->adlib.volume;
             }
         }
 

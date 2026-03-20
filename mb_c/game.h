@@ -187,6 +187,11 @@ typedef struct {
     bool campaign_mode;
     int lives_gained;
     bool fog[MAP_HEIGHT][MAP_WIDTH];
+
+    // Off-screen map canvas for persistent tile + effect rendering
+    SDL_Texture* canvas;
+    uint8_t canvas_tiles[MAP_HEIGHT][MAP_WIDTH]; // snapshot for diffing
+    bool canvas_fog[MAP_HEIGHT][MAP_WIDTH];      // snapshot for fog diffing
 } World;
 
 bool is_passable(uint8_t val);

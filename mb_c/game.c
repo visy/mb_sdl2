@@ -32,10 +32,6 @@ bool is_passable(uint8_t val) {
     return val == TILE_PASSAGE || val == TILE_BLOOD || val == TILE_SLIME_CORPSE;
 }
 
-// Burned border rendering checks if cell looks "open"
-static bool is_open_for_border(uint8_t val) {
-    return is_passable(val) || val == TILE_EXPLOSION || val == TILE_SMOKE1 || val == TILE_SMOKE2;
-}
 
 static bool is_treasure(uint8_t val) {
     if (val == TILE_DIAMOND) return true;
@@ -1272,7 +1268,8 @@ static bool is_stone_like(uint8_t val) {
         || val == TILE_STONE_BOTTOM_LEFT || val == TILE_STONE_CRACKED_LIGHT || val == TILE_STONE_CRACKED_HEAVY;
 }
 
-static void render_burned_borders(App* app, SDL_Renderer* renderer, World* world, int x, int y) {
+// Paint burned border overlays for a cell onto the current render target
+static void paint_burned_borders(App* app, SDL_Renderer* renderer, World* world, int x, int y) {
     if (!world->burned[y][x]) return;
     uint8_t val = world->tiles[y][x];
     if (val != TILE_PASSAGE && val != TILE_BLOOD && val != TILE_SLIME_CORPSE
@@ -1303,12 +1300,118 @@ static void render_burned_borders(App* app, SDL_Renderer* renderer, World* world
     }
 }
 
+// Paint a single map cell (tile + burned overlay) onto the canvas
+static void canvas_paint_cell(App* app, SDL_Renderer* renderer, World* world, int x, int y) {
+    glyphs_render(&app->glyphs, renderer, x * 10, y * 10 + 30, (GlyphType)(GLYPH_MAP_START + world->tiles[y][x]));
+    paint_burned_borders(app, renderer, world, x, y);
+    // Also repaint burned borders of neighbors that overlap into this cell
+    if (x > 0) paint_burned_borders(app, renderer, world, x - 1, y);
+    if (x < MAP_WIDTH - 1) paint_burned_borders(app, renderer, world, x + 1, y);
+    if (y > 0) paint_burned_borders(app, renderer, world, x, y - 1);
+    if (y < MAP_HEIGHT - 1) paint_burned_borders(app, renderer, world, x, y + 1);
+}
+
+// Create canvas and paint the full initial map
+static void canvas_init(App* app, ApplicationContext* ctx, World* world) {
+    world->canvas = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888,
+        SDL_TEXTUREACCESS_TARGET, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+    SDL_SetRenderTarget(ctx->renderer, world->canvas);
+    // Start with black background
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+    SDL_RenderClear(ctx->renderer);
+
+    if (world->darkness) {
+        // In darkness mode, only paint borders initially
+        for (int x = 0; x < MAP_WIDTH; ++x) {
+            glyphs_render(&app->glyphs, ctx->renderer, x * 10, 30, (GlyphType)(GLYPH_MAP_START + world->tiles[0][x]));
+            glyphs_render(&app->glyphs, ctx->renderer, x * 10, (MAP_HEIGHT - 1) * 10 + 30, (GlyphType)(GLYPH_MAP_START + world->tiles[MAP_HEIGHT - 1][x]));
+        }
+        for (int y = 0; y < MAP_HEIGHT; ++y) {
+            glyphs_render(&app->glyphs, ctx->renderer, 0, y * 10 + 30, (GlyphType)(GLYPH_MAP_START + world->tiles[y][0]));
+            glyphs_render(&app->glyphs, ctx->renderer, (MAP_WIDTH - 1) * 10, y * 10 + 30, (GlyphType)(GLYPH_MAP_START + world->tiles[y][MAP_WIDTH - 1]));
+        }
+    } else {
+        // Paint all tiles
+        for (int y = 0; y < MAP_HEIGHT; ++y)
+            for (int x = 0; x < MAP_WIDTH; ++x)
+                glyphs_render(&app->glyphs, ctx->renderer, x * 10, y * 10 + 30, (GlyphType)(GLYPH_MAP_START + world->tiles[y][x]));
+    }
+
+    SDL_SetRenderTarget(ctx->renderer, NULL);
+
+    // Snapshot current state for diffing
+    memcpy(world->canvas_tiles, world->tiles, sizeof(world->tiles));
+    memcpy(world->canvas_fog, world->fog, sizeof(world->fog));
+}
+
+// Flush changes: diff current tiles/fog against snapshot, repaint changed cells
+static void canvas_flush(App* app, ApplicationContext* ctx, World* world) {
+    SDL_SetRenderTarget(ctx->renderer, world->canvas);
+
+    if (world->darkness) {
+        // Check for newly revealed fog cells
+        for (int y = 1; y < MAP_HEIGHT - 1; ++y) {
+            for (int x = 1; x < MAP_WIDTH - 1; ++x) {
+                if (world->canvas_fog[y][x] && !world->fog[y][x]) {
+                    // Newly revealed: paint the cell
+                    canvas_paint_cell(app, ctx->renderer, world, x, y);
+                    world->canvas_fog[y][x] = false;
+                    world->canvas_tiles[y][x] = world->tiles[y][x];
+                } else if (!world->fog[y][x] && world->canvas_tiles[y][x] != world->tiles[y][x]) {
+                    // Already revealed but tile changed
+                    canvas_paint_cell(app, ctx->renderer, world, x, y);
+                    world->canvas_tiles[y][x] = world->tiles[y][x];
+                }
+            }
+        }
+        // Border tiles can also change
+        for (int x = 0; x < MAP_WIDTH; ++x) {
+            if (world->canvas_tiles[0][x] != world->tiles[0][x]) {
+                glyphs_render(&app->glyphs, ctx->renderer, x * 10, 30, (GlyphType)(GLYPH_MAP_START + world->tiles[0][x]));
+                world->canvas_tiles[0][x] = world->tiles[0][x];
+            }
+            if (world->canvas_tiles[MAP_HEIGHT-1][x] != world->tiles[MAP_HEIGHT-1][x]) {
+                glyphs_render(&app->glyphs, ctx->renderer, x * 10, (MAP_HEIGHT-1)*10+30, (GlyphType)(GLYPH_MAP_START + world->tiles[MAP_HEIGHT-1][x]));
+                world->canvas_tiles[MAP_HEIGHT-1][x] = world->tiles[MAP_HEIGHT-1][x];
+            }
+        }
+        for (int y = 0; y < MAP_HEIGHT; ++y) {
+            if (world->canvas_tiles[y][0] != world->tiles[y][0]) {
+                glyphs_render(&app->glyphs, ctx->renderer, 0, y*10+30, (GlyphType)(GLYPH_MAP_START + world->tiles[y][0]));
+                world->canvas_tiles[y][0] = world->tiles[y][0];
+            }
+            if (world->canvas_tiles[y][MAP_WIDTH-1] != world->tiles[y][MAP_WIDTH-1]) {
+                glyphs_render(&app->glyphs, ctx->renderer, (MAP_WIDTH-1)*10, y*10+30, (GlyphType)(GLYPH_MAP_START + world->tiles[y][MAP_WIDTH-1]));
+                world->canvas_tiles[y][MAP_WIDTH-1] = world->tiles[y][MAP_WIDTH-1];
+            }
+        }
+    } else {
+        // Non-darkness: just diff tiles
+        for (int y = 0; y < MAP_HEIGHT; ++y) {
+            for (int x = 0; x < MAP_WIDTH; ++x) {
+                if (world->canvas_tiles[y][x] != world->tiles[y][x]) {
+                    canvas_paint_cell(app, ctx->renderer, world, x, y);
+                    world->canvas_tiles[y][x] = world->tiles[y][x];
+                }
+            }
+        }
+    }
+
+    SDL_SetRenderTarget(ctx->renderer, NULL);
+}
+
 static void render_world(App* app, ApplicationContext* ctx, World* world) {
+    // Flush tile/fog changes to the off-screen canvas
+    canvas_flush(app, ctx, world);
+
+    // Compose final frame onto the presentation buffer
     SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+
+    // HUD background
     SDL_RenderCopy(ctx->renderer, app->players.texture, NULL, NULL);
 
     SDL_Color yellow = {255, 255, 0, 255}, white = {255, 255, 255, 255}, cyan = {0, 255, 255, 255};
-
     static const int PLAYER_X[] = {12, 174, 337, 500};
     static const int HEALTH_BAR_LEFT[] = {142, 304, 467, 630};
 
@@ -1368,30 +1471,13 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
         }
     }
 
+    // Copy the map canvas (map area only: y=30..30+MAP_HEIGHT*10)
+    SDL_Rect map_area = {0, 30, SCREEN_WIDTH, MAP_HEIGHT * 10};
+    SDL_RenderCopy(ctx->renderer, world->canvas, &map_area, &map_area);
+
+    // Render actors on top of the canvas
     if (world->darkness) {
-        for (int x = 0; x < MAP_WIDTH; ++x) {
-            glyphs_render(&app->glyphs, ctx->renderer, x * 10, 30, (GlyphType)(GLYPH_MAP_START + world->tiles[0][x]));
-            glyphs_render(&app->glyphs, ctx->renderer, x * 10, (MAP_HEIGHT - 1) * 10 + 30, (GlyphType)(GLYPH_MAP_START + world->tiles[MAP_HEIGHT - 1][x]));
-        }
-        for (int y = 0; y < MAP_HEIGHT; ++y) {
-            glyphs_render(&app->glyphs, ctx->renderer, 0, y * 10 + 30, (GlyphType)(GLYPH_MAP_START + world->tiles[y][0]));
-            glyphs_render(&app->glyphs, ctx->renderer, (MAP_WIDTH - 1) * 10, y * 10 + 30, (GlyphType)(GLYPH_MAP_START + world->tiles[y][MAP_WIDTH - 1]));
-        }
-        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
-        SDL_Rect dark_rect = {10, 40, 620, 430};
-        SDL_RenderFillRect(ctx->renderer, &dark_rect);
-
-        for (int y = 1; y < MAP_HEIGHT - 1; ++y)
-            for (int x = 1; x < MAP_WIDTH - 1; ++x)
-                if (!world->fog[y][x])
-                    glyphs_render(&app->glyphs, ctx->renderer, x * 10, y * 10 + 30, (GlyphType)(GLYPH_MAP_START + world->tiles[y][x]));
-
-        for (int y = 1; y < MAP_HEIGHT - 1; ++y)
-            for (int x = 1; x < MAP_WIDTH - 1; ++x)
-                if (!world->fog[y][x])
-                    render_burned_borders(app, ctx->renderer, world, x, y);
-
-        // Render monsters (only in revealed cells), then players on top (always visible)
+        // Monsters only in revealed cells, players always visible
         for (int i = world->num_players; i < world->num_actors; ++i) {
             Actor* a = &world->actors[i];
             if (!a->is_dead) {
@@ -1407,15 +1493,7 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
                 render_actor(app, ctx->renderer, a, i, world->num_players);
         }
     } else {
-        for (int y = 0; y < MAP_HEIGHT; ++y)
-            for (int x = 0; x < MAP_WIDTH; ++x)
-                glyphs_render(&app->glyphs, ctx->renderer, x * 10, y * 10 + 30, (GlyphType)(GLYPH_MAP_START + world->tiles[y][x]));
-
-        for (int y = 0; y < MAP_HEIGHT; ++y)
-            for (int x = 0; x < MAP_WIDTH; ++x)
-                render_burned_borders(app, ctx->renderer, world, x, y);
-
-        // Render monsters first, then players on top
+        // Monsters first, then players on top
         for (int i = world->num_players; i < world->num_actors; ++i)
             render_actor(app, ctx->renderer, &world->actors[i], i, world->num_players);
         for (int i = 0; i < world->num_players; ++i)
@@ -1526,6 +1604,8 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
 
     Uint32 round_start = SDL_GetTicks();
     Uint32 round_time_ms = (Uint32)app->options.round_time_secs * 1000;
+
+    canvas_init(app, ctx, &world);
 
     bool running = true, quit_requested = false;
     explosion_app = app;
@@ -2072,6 +2152,9 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
         context_present(ctx);
         SDL_Delay(20);
     }
+
+    if (world.canvas) SDL_DestroyTexture(world.canvas);
+    world.canvas = NULL;
 
     RoundResult result;
     memset(&result, 0, sizeof(result));

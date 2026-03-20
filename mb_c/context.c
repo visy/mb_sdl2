@@ -32,13 +32,29 @@ void context_init(ApplicationContext* ctx, const char* game_dir) {
         report_sdl_error("Failed to initialize SDL");
     }
 
-    ctx->window = SDL_CreateWindow("Mine Bombers", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 960, SDL_WINDOW_SHOWN);
+    ctx->window = SDL_CreateWindow("Mine Bombers", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        0, 0, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_SHOWN);
     if (!ctx->window) report_sdl_error("Failed to create window");
 
     ctx->renderer = SDL_CreateRenderer(ctx->window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
     if (!ctx->renderer) report_sdl_error("Failed to create renderer");
 
-    SDL_RenderSetLogicalSize(ctx->renderer, 640, 480);
+    // Compute centered 2x viewport (1280x960) within the fullscreen resolution
+    int out_w, out_h;
+    SDL_GetRendererOutputSize(ctx->renderer, &out_w, &out_h);
+    int scale_x = out_w / SCREEN_WIDTH;
+    int scale_y = out_h / SCREEN_HEIGHT;
+    int scale = (scale_x < scale_y) ? scale_x : scale_y;
+    if (scale < 1) scale = 1;
+    int vw = SCREEN_WIDTH * scale;
+    int vh = SCREEN_HEIGHT * scale;
+    ctx->viewport.x = (out_w - vw) / 2;
+    ctx->viewport.y = (out_h - vh) / 2;
+    ctx->viewport.w = vw;
+    ctx->viewport.h = vh;
+
+    ctx->border_texture = NULL;
+    ctx->border_strip_w = 30;
 
     ctx->buffer = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, 640, 480);
     
@@ -132,7 +148,23 @@ void context_animate(ApplicationContext* ctx, Animation animation, int steps) {
 
         SDL_SetTextureBlendMode(ctx->buffer, SDL_BLENDMODE_BLEND);
         SDL_SetTextureAlphaMod(ctx->buffer, (Uint8)alpha);
-        SDL_RenderCopy(ctx->renderer, ctx->buffer, NULL, NULL);
+        SDL_RenderCopy(ctx->renderer, ctx->buffer, NULL, &ctx->viewport);
+
+        // Render border strips during animation too
+        if (ctx->border_texture && ctx->viewport.x > 0) {
+            int sw = ctx->border_strip_w;
+            SDL_SetTextureBlendMode(ctx->border_texture, SDL_BLENDMODE_BLEND);
+            SDL_SetTextureAlphaMod(ctx->border_texture, (Uint8)alpha);
+            SDL_Rect src_l = { 0, 0, sw, SCREEN_HEIGHT };
+            SDL_Rect dst_l = { 0, ctx->viewport.y, ctx->viewport.x, ctx->viewport.h };
+            SDL_RenderCopy(ctx->renderer, ctx->border_texture, &src_l, &dst_l);
+            SDL_Rect src_r = { SCREEN_WIDTH - sw, 0, sw, SCREEN_HEIGHT };
+            SDL_Rect dst_r = { ctx->viewport.x + ctx->viewport.w, ctx->viewport.y,
+                               ctx->viewport.x, ctx->viewport.h };
+            SDL_RenderCopy(ctx->renderer, ctx->border_texture, &src_r, &dst_r);
+            SDL_SetTextureAlphaMod(ctx->border_texture, 255);
+        }
+
         SDL_RenderPresent(ctx->renderer);
         SDL_Delay(16);
     }
@@ -141,8 +173,32 @@ void context_animate(ApplicationContext* ctx, Animation animation, int steps) {
 
 void context_present(ApplicationContext* ctx) {
     SDL_SetRenderTarget(ctx->renderer, NULL);
-    SDL_RenderCopy(ctx->renderer, ctx->buffer, NULL, NULL);
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+    SDL_RenderClear(ctx->renderer);
+
+    // Render game buffer scaled to centered viewport
+    SDL_RenderCopy(ctx->renderer, ctx->buffer, NULL, &ctx->viewport);
+
+    // Render border strips from main menu texture in the left/right padding
+    if (ctx->border_texture && ctx->viewport.x > 0) {
+        int sw = ctx->border_strip_w;
+        // Left strip: source from left edge of main menu
+        SDL_Rect src_l = { 0, 0, sw, SCREEN_HEIGHT };
+        SDL_Rect dst_l = { 0, ctx->viewport.y, ctx->viewport.x, ctx->viewport.h };
+        SDL_RenderCopy(ctx->renderer, ctx->border_texture, &src_l, &dst_l);
+        // Right strip: source from right edge of main menu
+        SDL_Rect src_r = { SCREEN_WIDTH - sw, 0, sw, SCREEN_HEIGHT };
+        SDL_Rect dst_r = { ctx->viewport.x + ctx->viewport.w, ctx->viewport.y,
+                           ctx->viewport.x, ctx->viewport.h };
+        SDL_RenderCopy(ctx->renderer, ctx->border_texture, &src_r, &dst_r);
+    }
+
     SDL_RenderPresent(ctx->renderer);
+}
+
+void context_set_border(ApplicationContext* ctx, SDL_Texture* texture, int strip_width) {
+    ctx->border_texture = texture;
+    ctx->border_strip_w = strip_width;
 }
 
 void context_render_texture(ApplicationContext* ctx, SDL_Texture* texture) {
