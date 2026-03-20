@@ -4,6 +4,20 @@
 #include <string.h>
 #include <math.h>
 
+// Deterministic PRNG for multiplayer sync (xorshift32)
+static uint32_t game_rng_state = 1;
+
+void game_seed_rng(uint32_t seed) {
+    game_rng_state = seed ? seed : 1;
+}
+
+int game_rand(void) {
+    game_rng_state ^= game_rng_state << 13;
+    game_rng_state ^= game_rng_state >> 17;
+    game_rng_state ^= game_rng_state << 5;
+    return (int)(game_rng_state & 0x7FFFFFFF);
+}
+
 static const int SMALL_BOMB_PATTERN[][2] = {
   {-1, 0}, {1, 0}, {0, -1}, {0, 1}
 };
@@ -232,7 +246,7 @@ static void explode_cell_ex(World* world, int cx, int cy, int dmg, bool heavy) {
         if (heavy) {
             world->tiles[cy][cx] = TILE_EXPLOSION;
             world->timer[cy][cx] = 3;
-        } else if (rand() % 2 == 0) {
+        } else if (game_rand() % 2 == 0) {
             world->tiles[cy][cx] = TILE_STONE_CRACKED_HEAVY;
             world->hits[cy][cx] = 500;
         } else {
@@ -286,10 +300,10 @@ static void explode_barrel(World* world, int cx, int cy, App* app) {
     world->timer[cy][cx] = 3;
     world->burned[cy][cx] = 1;
     if (app->sound_explos1) context_play_sample_freq(app->sound_explos1, 11000);
-    int from = rand() % 5;
+    int from = game_rand() % 5;
     for (int i = from; i < 15; i++) {
-        int dx = (rand() % 20) - 10;
-        int dy = (rand() % 20) - 10;
+        int dx = (game_rand() % 20) - 10;
+        int dy = (game_rand() % 20) - 10;
         int tx = cx + dx, ty = cy + dy;
         if (tx >= 0 && tx < MAP_WIDTH && ty >= 0 && ty < MAP_HEIGHT) {
             explode_pattern(world, tx, ty, 84, BIG_BOMB_PATTERN, sizeof(BIG_BOMB_PATTERN)/sizeof(BIG_BOMB_PATTERN[0]));
@@ -499,7 +513,7 @@ static void finalize_napalm(World* world, int x, int y, void* userdata) {
 
 static void explode_jumping_bomb(World* world, int cx, int cy, App* app) {
     // Pick random bomb type and explode it
-    int r = rand() % 3;
+    int r = game_rand() % 3;
     int jumps = world->hits[cy][cx];
     if (r == 0) {
         world->tiles[cy][cx] = TILE_SMALL_BOMB1;
@@ -519,8 +533,8 @@ static void explode_jumping_bomb(World* world, int cx, int cy, App* app) {
     if (jumps > 1) {
         int nx = -1, ny = -1;
         for (int attempt = 0; attempt < 6; attempt++) {
-            int dx = (rand() % 8) - 4;
-            int dy = (rand() % 8) - 4;
+            int dx = (game_rand() % 8) - 4;
+            int dy = (game_rand() % 8) - 4;
             int tx = cx + dx, ty = cy + dy;
             if (tx >= 0 && tx < MAP_WIDTH && ty >= 0 && ty < MAP_HEIGHT) {
                 uint8_t v = world->tiles[ty][tx];
@@ -533,7 +547,7 @@ static void explode_jumping_bomb(World* world, int cx, int cy, App* app) {
         if (nx < 0) { nx = cx; ny = cy; }
         world->tiles[ny][nx] = TILE_JUMPING_BOMB;
         world->hits[ny][nx] = jumps - 1;
-        world->timer[ny][nx] = 1 + rand() % 180;
+        world->timer[ny][nx] = 1 + game_rand() % 180;
     }
 }
 
@@ -737,7 +751,7 @@ void game_init_world(World* world, uint8_t* level_data, int num_players) {
             if (val == TILE_BIOMASS) {
                 world->tiles[y][x] = val;
                 world->hits[y][x] = 400;
-                world->timer[y][x] = rand() % 30;
+                world->timer[y][x] = game_rand() % 30;
             } else {
                 world->tiles[y][x] = val;
                 world->hits[y][x] = get_initial_hits(val);
@@ -758,7 +772,7 @@ void game_init_world(World* world, uint8_t* level_data, int num_players) {
     }
     if (num_players >= 2) {
         // Randomize P1/P2 spawn corners
-        if (rand() % 2) {
+        if (game_rand() % 2) {
             world->actors[0].pos.x = 15;  world->actors[0].pos.y = 45;  world->actors[0].facing = DIR_RIGHT;
             world->actors[1].pos.x = 625; world->actors[1].pos.y = 465; world->actors[1].facing = DIR_LEFT;
         } else {
@@ -767,13 +781,13 @@ void game_init_world(World* world, uint8_t* level_data, int num_players) {
         }
     }
     if (num_players == 3) {
-        if (rand() % 2) {
+        if (game_rand() % 2) {
             world->actors[2].pos.x = 15;  world->actors[2].pos.y = 465; world->actors[2].facing = DIR_RIGHT;
         } else {
             world->actors[2].pos.x = 625; world->actors[2].pos.y = 45;  world->actors[2].facing = DIR_LEFT;
         }
     } else if (num_players == 4) {
-        if (rand() % 2) {
+        if (game_rand() % 2) {
             world->actors[2].pos.x = 15;  world->actors[2].pos.y = 465; world->actors[2].facing = DIR_RIGHT;
             world->actors[3].pos.x = 625; world->actors[3].pos.y = 45;  world->actors[3].facing = DIR_LEFT;
         } else {
@@ -791,7 +805,7 @@ static void randomize_exits(World* world) {
         for (int x = 0; x < MAP_WIDTH; x++)
             if (world->tiles[y][x] == TILE_EXIT) exit_count++;
     if (exit_count <= 1) return;
-    int keep = rand() % exit_count;
+    int keep = game_rand() % exit_count;
     int idx = 0;
     for (int y = 0; y < MAP_HEIGHT; y++)
         for (int x = 0; x < MAP_WIDTH; x++)
@@ -885,7 +899,7 @@ static void monster_head_to_target(Actor* actor, int tx, int ty, World* world) {
 
     // Random direction
     Direction dirs[] = {DIR_LEFT, DIR_RIGHT, DIR_UP, DIR_DOWN};
-    int r = rand() % 5;
+    int r = game_rand() % 5;
     if (r < 4) {
         actor->facing = dirs[r];
     } else {
@@ -900,7 +914,7 @@ static void monster_avoid_bomb(Actor* actor, int bx, int by, World* world) {
     int dy = abs(cy - by);
     actor->moving = true;
 
-    if (dx > dy || (rand() % 100) < 3) {
+    if (dx > dy || (game_rand() % 100) < 3) {
         actor->facing = (cx > bx) ? DIR_RIGHT : DIR_LEFT;
         if (!monster_can_move(actor, world)) actor->facing = DIR_DOWN;
         if (!monster_can_move(actor, world)) actor->facing = DIR_UP;
@@ -1136,7 +1150,7 @@ static void animate_monster(World* world, int idx) {
                         tele[nt][0] = tx; tele[nt][1] = ty; nt++;
                     }
             if (nt > 0) {
-                int r = rand() % nt;
+                int r = game_rand() % nt;
                 actor->pos.x = tele[r][0] * 10 + 5;
                 actor->pos.y = tele[r][1] * 10 + 35;
             }
@@ -1233,7 +1247,7 @@ static void animate_monsters(World* world, App* app) {
         if ((world->round_counter % 33 == 0 && !monster_can_move(m, world)) || world->round_counter % 121 == 0) {
             Direction dirs[] = {DIR_LEFT, DIR_RIGHT, DIR_UP, DIR_DOWN};
             m->moving = true;
-            m->facing = dirs[rand() % 4];
+            m->facing = dirs[game_rand() % 4];
         }
     }
 }
@@ -1512,13 +1526,13 @@ static void player_interact_tile(App* app, World* world, int p, int ncx, int ncy
     if (val >= TILE_GOLD_SHIELD && val <= TILE_GOLD_CROWN) {
         app->player_cash[p] += get_treasure_value(val);
         world->tiles[ncy][ncx] = TILE_PASSAGE;
-        context_play_sample_freq(app->sound_kili, 10000 + (rand() % 5000));
+        context_play_sample_freq(app->sound_kili, 10000 + (game_rand() % 5000));
         return;
     }
     if (val == TILE_DIAMOND) {
         app->player_cash[p] += 1000;
         world->tiles[ncy][ncx] = TILE_PASSAGE;
-        context_play_sample_freq(app->sound_kili, 10000 + (rand() % 5000));
+        context_play_sample_freq(app->sound_kili, 10000 + (game_rand() % 5000));
         return;
     }
 
@@ -1537,25 +1551,25 @@ static void player_interact_tile(App* app, World* world, int p, int ncx, int ncy
 
     // Weapons crate - 3 categories: rare (1/5), medium (1/5), common (3/5)
     if (val == TILE_WEAPONS_CRATE) {
-        int cat = rand() % 5;
+        int cat = game_rand() % 5;
         if (cat == 0) {
             // Rare: 1-2 of atomic/grenade/flamethrower/clone
-            int cnt = 1 + rand() % 2;
+            int cnt = 1 + game_rand() % 2;
             int weaps[] = {EQUIP_ATOMIC_BOMB, EQUIP_GRENADE, EQUIP_FLAMETHROWER, EQUIP_CLONE};
-            app->player_inventory[p][weaps[rand() % 4]] += cnt;
+            app->player_inventory[p][weaps[game_rand() % 4]] += cnt;
         } else if (cat == 1) {
             // Medium: 1-5 of napalm/large_crucifix/teleport/biomass/extinguisher/jumping_bomb/super_drill
-            int cnt = 1 + rand() % 5;
+            int cnt = 1 + game_rand() % 5;
             int weaps[] = {EQUIP_NAPALM, EQUIP_LARGE_CRUCIFIX, EQUIP_TELEPORT, EQUIP_BIOMASS,
                            EQUIP_EXTINGUISHER, EQUIP_JUMPING_BOMB, EQUIP_SUPER_DRILL};
-            app->player_inventory[p][weaps[rand() % 7]] += cnt;
+            app->player_inventory[p][weaps[game_rand() % 7]] += cnt;
         } else {
             // Common: 3-12 of basic weapons
-            int cnt = 3 + rand() % 10;
+            int cnt = 3 + game_rand() % 10;
             int weaps[] = {EQUIP_SMALL_BOMB, EQUIP_BIG_BOMB, EQUIP_DYNAMITE, EQUIP_SMALL_RADIO,
                            EQUIP_LARGE_RADIO, EQUIP_MINE, EQUIP_BARREL, EQUIP_SMALL_CRUCIFIX,
                            EQUIP_PLASTIC, EQUIP_EXPLOSIVE_PLASTIC, EQUIP_DIGGER, EQUIP_METAL_WALL};
-            app->player_inventory[p][weaps[rand() % 12]] += cnt;
+            app->player_inventory[p][weaps[game_rand() % 12]] += cnt;
         }
         world->tiles[ncy][ncx] = TILE_PASSAGE;
         context_play_sample(app->sound_picaxe);
@@ -1571,14 +1585,249 @@ static void player_interact_tile(App* app, World* world, int p, int ncx, int ncy
     }
 }
 
+// ==================== Player action helpers (shared by local + net) ====================
+
+static void apply_game_action(App* app, World* world, int p) {
+    Actor* actor = &world->actors[p];
+    if (actor->is_dead) return;
+    int cx = actor->pos.x / 10;
+    int cy = (actor->pos.y - 30) / 10;
+    if (cx < 0 || cx >= MAP_WIDTH || cy < 0 || cy >= MAP_HEIGHT) return;
+    int w = actor->selected_weapon;
+    if (w == EQUIP_FLAMETHROWER && app->player_inventory[p][w] > 0) {
+        app->player_inventory[p][w]--;
+        activate_flamethrower(world, cx, cy, actor->facing, cx, cy);
+        if (app->sound_explos4) context_play_sample_freq(app->sound_explos4, 11000);
+    } else if (w == EQUIP_EXTINGUISHER && app->player_inventory[p][w] > 0) {
+        app->player_inventory[p][w]--;
+        int edx = (actor->facing == DIR_RIGHT) ? 1 : (actor->facing == DIR_LEFT) ? -1 : 0;
+        int edy = (actor->facing == DIR_DOWN) ? 1 : (actor->facing == DIR_UP) ? -1 : 0;
+        int fx = cx + edx, fy = cy + edy;
+        for (int i = 0; i < 6; i++) {
+            if (fx < 0 || fx >= MAP_WIDTH || fy < 0 || fy >= MAP_HEIGHT) break;
+            uint8_t ev = world->tiles[fy][fx];
+            if (is_bomb(ev) && ev != TILE_GRENADE_FLY_R && ev != TILE_GRENADE_FLY_L
+                && ev != TILE_GRENADE_FLY_U && ev != TILE_GRENADE_FLY_D) {
+                world->timer[fy][fx] = 0;
+                world->hits[fy][fx] = 20;
+                if (ev == TILE_DYNAMITE1 || ev == TILE_DYNAMITE2 || ev == TILE_DYNAMITE3)
+                    world->tiles[fy][fx] = TILE_DYNAMITE_EXTINGUISHED;
+                else if (ev == TILE_BIG_BOMB1 || ev == TILE_BIG_BOMB2 || ev == TILE_BIG_BOMB3)
+                    world->tiles[fy][fx] = TILE_BIG_BOMB_EXTINGUISHED;
+                else if (ev == TILE_SMALL_BOMB1 || ev == TILE_SMALL_BOMB2 || ev == TILE_SMALL_BOMB3)
+                    world->tiles[fy][fx] = TILE_SMALL_BOMB_EXTINGUISHED;
+                else if (ev == TILE_NAPALM1 || ev == TILE_NAPALM2)
+                    world->tiles[fy][fx] = TILE_NAPALM_EXTINGUISHED;
+            } else if (is_passable(ev)) {
+                world->tiles[fy][fx] = TILE_SMOKE1;
+                world->timer[fy][fx] = 3;
+            } else {
+                break;
+            }
+            fx += edx; fy += edy;
+        }
+    } else if (w == EQUIP_ARMOR) {
+        // Armor is passive
+    } else if (w == EQUIP_SUPER_DRILL && app->player_inventory[p][w] > 0 && actor->super_drill_count == 0) {
+        app->player_inventory[p][w]--;
+        actor->super_drill_count = 10;
+        actor->drilling += 300;
+    } else if (w == EQUIP_CLONE && app->player_inventory[p][w] > 0 && world->num_actors < MAX_ACTORS) {
+        app->player_inventory[p][w]--;
+        Actor* clone = &world->actors[world->num_actors];
+        memset(clone, 0, sizeof(Actor));
+        clone->kind = ACTOR_CLONE;
+        clone->clone_owner = p;
+        clone->facing = DIR_RIGHT;
+        clone->moving = true;
+        clone->max_health = 100;
+        clone->health = 100;
+        clone->pos.x = actor->pos.x / 10 * 10 + 5;
+        clone->pos.y = (actor->pos.y - 30) / 10 * 10 + 35;
+        clone->drilling = actor->drilling;
+        if (actor->super_drill_count > 0) clone->drilling -= 300;
+        clone->animation = 1;
+        clone->is_active = true;
+        world->num_actors++;
+    } else if (app->player_inventory[p][w] > 0 && (world->tiles[cy][cx] == TILE_PASSAGE || is_treasure(world->tiles[cy][cx]))) {
+        uint8_t tile = 0; int timer = 0; bool place = true;
+        switch (w) {
+            case EQUIP_SMALL_BOMB: tile = TILE_SMALL_BOMB1; timer = 100; break;
+            case EQUIP_BIG_BOMB: tile = TILE_BIG_BOMB1; timer = 100; break;
+            case EQUIP_DYNAMITE: tile = TILE_DYNAMITE1; timer = 80; break;
+            case EQUIP_ATOMIC_BOMB: tile = TILE_ATOMIC1; timer = 280; break;
+            case EQUIP_SMALL_RADIO:
+                switch (p) {
+                    case 0: tile = TILE_SMALL_RADIO_BLUE; break;
+                    case 1: tile = TILE_SMALL_RADIO_RED; break;
+                    case 2: tile = TILE_SMALL_RADIO_GREEN; break;
+                    case 3: tile = TILE_SMALL_RADIO_YELLOW; break;
+                }
+                timer = 0; break;
+            case EQUIP_LARGE_RADIO:
+                switch (p) {
+                    case 0: tile = TILE_BIG_RADIO_BLUE; break;
+                    case 1: tile = TILE_BIG_RADIO_RED; break;
+                    case 2: tile = TILE_BIG_RADIO_GREEN; break;
+                    case 3: tile = TILE_BIG_RADIO_YELLOW; break;
+                }
+                timer = 0; break;
+            case EQUIP_GRENADE:
+                switch (actor->facing) {
+                    case DIR_RIGHT: tile = TILE_GRENADE_FLY_R; break;
+                    case DIR_LEFT:  tile = TILE_GRENADE_FLY_L; break;
+                    case DIR_UP:    tile = TILE_GRENADE_FLY_U; break;
+                    case DIR_DOWN:  tile = TILE_GRENADE_FLY_D; break;
+                }
+                timer = 1; break;
+            case EQUIP_MINE: tile = TILE_MINE; timer = 0; break;
+            case EQUIP_NAPALM: tile = TILE_NAPALM1; timer = 260; break;
+            case EQUIP_BARREL: tile = TILE_BARREL; timer = 0; break;
+            case EQUIP_SMALL_CRUCIFIX: tile = TILE_SMALL_CRUCIFIX_BOMB; timer = 100; break;
+            case EQUIP_LARGE_CRUCIFIX: tile = TILE_LARGE_CRUCIFIX_BOMB; timer = 100; break;
+            case EQUIP_PLASTIC:
+                tile = TILE_PLASTIC_BOMB; timer = 100;
+                if (app->sound_urethan) context_play_sample_freq(app->sound_urethan, 11000);
+                break;
+            case EQUIP_EXPLOSIVE_PLASTIC:
+                tile = TILE_EXPLOSIVE_PLASTIC_BOMB; timer = 90;
+                if (app->sound_urethan) context_play_sample_freq(app->sound_urethan, 11000);
+                break;
+            case EQUIP_DIGGER: tile = TILE_DIGGER_BOMB; timer = 100; break;
+            case EQUIP_METAL_WALL: tile = TILE_METAL_WALL_PLACED; timer = 1; break;
+            case EQUIP_TELEPORT: tile = TILE_TELEPORT; timer = 0; break;
+            case EQUIP_BIOMASS:
+                tile = TILE_BIOMASS; timer = game_rand() % 80;
+                if (app->sound_urethan) context_play_sample_freq(app->sound_urethan, 11000);
+                break;
+            case EQUIP_JUMPING_BOMB:
+                tile = TILE_JUMPING_BOMB; timer = 80 + game_rand() % 80;
+                break;
+            default: place = false; break;
+        }
+        if (place) {
+            world->tiles[cy][cx] = tile;
+            world->timer[cy][cx] = timer;
+            if (w == EQUIP_JUMPING_BOMB) world->hits[cy][cx] = 5;
+            if (w == EQUIP_BIOMASS) world->hits[cy][cx] = 400;
+            app->player_inventory[p][w]--;
+        }
+    }
+}
+
+static void apply_game_cycle(App* app, World* world, int p) {
+    Actor* actor = &world->actors[p];
+    if (actor->is_dead) return;
+    for (int i = 1; i < EQUIP_TOTAL; ++i) {
+        int w = (actor->selected_weapon + i) % EQUIP_TOTAL;
+        if (w == EQUIP_SMALL_PICKAXE || w == EQUIP_LARGE_PICKAXE || w == EQUIP_DRILL || w == EQUIP_ARMOR) continue;
+        if (app->player_inventory[p][w] > 0) {
+            actor->selected_weapon = w;
+            break;
+        }
+    }
+}
+
+static void apply_game_remote(World* world, int p) {
+    for (int ry = 0; ry < MAP_HEIGHT; ry++)
+        for (int rx = 0; rx < MAP_WIDTH; rx++)
+            if (is_radio_for(world->tiles[ry][rx], p))
+                world->timer[ry][rx] = 1;
+}
+
+#ifdef MB_NET
+// ==================== Netgame input exchange ====================
+
+static bool net_exchange_inputs(NetContext* net, uint8_t local_input,
+                                uint8_t all_inputs[NET_MAX_PLAYERS], uint32_t frame) {
+    if (net->is_server) {
+        all_inputs[net->local_player] = local_input;
+        bool received[NET_MAX_PLAYERS] = {false};
+        received[net->local_player] = true;
+
+        Uint32 start = SDL_GetTicks();
+        for (;;) {
+            bool have_all = true;
+            for (int s = 0; s < NET_MAX_PLAYERS; s++) {
+                if (net_slot_active(net, s) && !received[s]) { have_all = false; break; }
+            }
+            if (have_all) break;
+            if (SDL_GetTicks() - start > 2000) return false; // timeout
+
+            NetMessage msg;
+            ENetPeer* from;
+            while (net_poll(net, &msg, &from) > 0) {
+                if (msg.type == NET_MSG_GAME_INPUT) {
+                    int pi = msg.data.game_input.player_index;
+                    if (pi >= 0 && pi < NET_MAX_PLAYERS) {
+                        all_inputs[pi] = msg.data.game_input.input;
+                        received[pi] = true;
+                    }
+                } else if (msg.type == NET_MSG_PLAYER_LEAVE) {
+                    return false;
+                }
+            }
+            SDL_Delay(1);
+        }
+
+        // Broadcast combined tick to all clients
+        NetMessage tick = {0};
+        tick.type = NET_MSG_GAME_TICK;
+        tick.data.game_tick.frame = frame;
+        memcpy(tick.data.game_tick.inputs, all_inputs, NET_MAX_PLAYERS);
+        net_broadcast(net, &tick);
+        return true;
+    } else {
+        // Client: send input to server
+        NetMessage msg = {0};
+        msg.type = NET_MSG_GAME_INPUT;
+        msg.data.game_input.frame = frame;
+        msg.data.game_input.player_index = net->local_player;
+        msg.data.game_input.input = local_input;
+        net_send_to(net->server_peer, &msg);
+
+        // Wait for tick from server
+        Uint32 start = SDL_GetTicks();
+        while (SDL_GetTicks() - start < 2000) {
+            NetMessage recv;
+            ENetPeer* from;
+            while (net_poll(net, &recv, &from) > 0) {
+                if (recv.type == NET_MSG_GAME_TICK) {
+                    memcpy(all_inputs, recv.data.game_tick.inputs, NET_MAX_PLAYERS);
+                    return true;
+                } else if (recv.type == NET_MSG_PLAYER_LEAVE) {
+                    return false;
+                }
+            }
+            SDL_Delay(1);
+        }
+        return false; // timeout
+    }
+}
+#endif /* MB_NET */
+
 // ==================== Main game loop ====================
 
-RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
-    int tracks[] = {0, 39, 55};
-    context_play_music_at(ctx, "OEKU.S3M", tracks[rand() % 3]);
+RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, NetContext* net) {
+    // For local play, seed PRNG with time. For netgame, caller seeds before the session.
+#ifdef MB_NET
+    if (!net) {
+        game_seed_rng((uint32_t)SDL_GetTicks());
+    }
+#else
+    game_seed_rng((uint32_t)SDL_GetTicks());
+#endif
 
+    int tracks[] = {0, 39, 55};
+    context_play_music_at(ctx, "OEKU.S3M", tracks[game_rand() % 3]);
+
+#ifdef MB_NET
+    bool campaign = net ? false : (app->options.players == 1);
+    int num_players = net ? app->options.players : (campaign ? 1 : app->options.players);
+#else
     bool campaign = (app->options.players == 1);
     int num_players = campaign ? 1 : app->options.players;
+#endif
 
     World world;
     game_init_world(&world, level_data, num_players);
@@ -1609,187 +1858,97 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
 
     bool running = true, quit_requested = false;
     explosion_app = app;
+    (void)net; // may be unused when MB_NET is not defined
     while (running) {
-        SDL_Event e;
-        while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_QUIT) { running = false; quit_requested = true; break; }
+#ifdef MB_NET
+        if (net) {
+            // === NETGAME: lockstep input ===
+            uint8_t local_input = 0;
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) {
+                if (e.type == SDL_QUIT) { local_input |= NET_INPUT_QUIT; break; }
+                ActionType act = input_map_event(&e, 0, &app->input_config);
+                if (act == ACT_UP)    local_input = (local_input & ~NET_INPUT_DIR_MASK) | NET_INPUT_UP;
+                else if (act == ACT_DOWN)  local_input = (local_input & ~NET_INPUT_DIR_MASK) | NET_INPUT_DOWN;
+                else if (act == ACT_LEFT)  local_input = (local_input & ~NET_INPUT_DIR_MASK) | NET_INPUT_LEFT;
+                else if (act == ACT_RIGHT) local_input = (local_input & ~NET_INPUT_DIR_MASK) | NET_INPUT_RIGHT;
+                else if (act == ACT_STOP)  local_input = (local_input & ~NET_INPUT_DIR_MASK) | NET_INPUT_STOP;
+                else if (act == ACT_ACTION) local_input |= NET_INPUT_ACTION;
+                else if (act == ACT_CYCLE)  local_input |= NET_INPUT_CYCLE;
+                else if (act == ACT_REMOTE) local_input |= NET_INPUT_REMOTE;
+                else if (act == ACT_GOD && (e.type == SDL_KEYDOWN || e.type == SDL_CONTROLLERBUTTONDOWN))
+                    local_input |= NET_INPUT_GOD;
+                if (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_F10 || e.key.keysym.scancode == SDL_SCANCODE_ESCAPE))
+                    local_input |= NET_INPUT_QUIT;
+                if (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)
+                    local_input |= NET_INPUT_QUIT;
+            }
 
-            for (int p = 0; p < world.num_players; ++p) {
-                ActionType act = input_map_event(&e, p, &app->input_config);
-
-                if (act == ACT_GOD && (e.type == SDL_KEYDOWN || e.type == SDL_CONTROLLERBUTTONDOWN)) {
-                    world.god_mode = !world.god_mode;
-                }
-
-                if (act != ACT_MAX_PLAYER && act != ACT_GOD && !world.actors[p].is_dead) {
+            uint8_t all_inputs[NET_MAX_PLAYERS] = {0};
+            if (!net_exchange_inputs(net, local_input, all_inputs, (uint32_t)world.round_counter)) {
+                running = false;
+                quit_requested = true;
+            } else {
+                for (int p = 0; p < world.num_players; p++) {
+                    uint8_t inp = all_inputs[p];
+                    if (inp & NET_INPUT_QUIT) { running = false; quit_requested = true; }
+                    if (inp & NET_INPUT_GOD) world.god_mode = !world.god_mode;
                     Actor* actor = &world.actors[p];
-                    switch (act) {
-                        case ACT_UP:    actor->facing = DIR_UP;    actor->moving = true; break;
-                        case ACT_DOWN:  actor->facing = DIR_DOWN;  actor->moving = true; break;
-                        case ACT_LEFT:  actor->facing = DIR_LEFT;  actor->moving = true; break;
-                        case ACT_RIGHT: actor->facing = DIR_RIGHT; actor->moving = true; break;
-                        case ACT_STOP:  actor->moving = false; break;
-                        case ACT_ACTION: {
-                            int cx = actor->pos.x / 10;
-                            int cy = (actor->pos.y - 30) / 10;
-                            if (cx >= 0 && cx < MAP_WIDTH && cy >= 0 && cy < MAP_HEIGHT) {
-                                int w = actor->selected_weapon;
-                                // Non-placeable items: use immediately
-                                if (w == EQUIP_FLAMETHROWER && app->player_inventory[p][w] > 0) {
-                                    app->player_inventory[p][w]--;
-                                    activate_flamethrower(&world, cx, cy, actor->facing, cx, cy);
-                                    if (app->sound_explos4) context_play_sample_freq(app->sound_explos4, 11000);
-                                } else if (w == EQUIP_EXTINGUISHER && app->player_inventory[p][w] > 0) {
-                                    app->player_inventory[p][w]--;
-                                    int edx = (actor->facing == DIR_RIGHT) ? 1 : (actor->facing == DIR_LEFT) ? -1 : 0;
-                                    int edy = (actor->facing == DIR_DOWN) ? 1 : (actor->facing == DIR_UP) ? -1 : 0;
-                                    int fx = cx + edx, fy = cy + edy;
-                                    for (int i = 0; i < 6; i++) {
-                                        if (fx < 0 || fx >= MAP_WIDTH || fy < 0 || fy >= MAP_HEIGHT) break;
-                                        uint8_t ev = world.tiles[fy][fx];
-                                        if (is_bomb(ev) && ev != TILE_GRENADE_FLY_R && ev != TILE_GRENADE_FLY_L
-                                            && ev != TILE_GRENADE_FLY_U && ev != TILE_GRENADE_FLY_D) {
-                                            world.timer[fy][fx] = 0;
-                                            world.hits[fy][fx] = 20;
-                                            // Convert to extinguished variants
-                                            if (ev == TILE_DYNAMITE1 || ev == TILE_DYNAMITE2 || ev == TILE_DYNAMITE3)
-                                                world.tiles[fy][fx] = TILE_DYNAMITE_EXTINGUISHED;
-                                            else if (ev == TILE_BIG_BOMB1 || ev == TILE_BIG_BOMB2 || ev == TILE_BIG_BOMB3)
-                                                world.tiles[fy][fx] = TILE_BIG_BOMB_EXTINGUISHED;
-                                            else if (ev == TILE_SMALL_BOMB1 || ev == TILE_SMALL_BOMB2 || ev == TILE_SMALL_BOMB3)
-                                                world.tiles[fy][fx] = TILE_SMALL_BOMB_EXTINGUISHED;
-                                            else if (ev == TILE_NAPALM1 || ev == TILE_NAPALM2)
-                                                world.tiles[fy][fx] = TILE_NAPALM_EXTINGUISHED;
-                                        } else if (is_passable(ev)) {
-                                            world.tiles[fy][fx] = TILE_SMOKE1;
-                                            world.timer[fy][fx] = 3;
-                                        } else {
-                                            break; // Hit wall or non-passable non-bomb
-                                        }
-                                        fx += edx; fy += edy;
-                                    }
-                                } else if (w == EQUIP_ARMOR) {
-                                    // Armor is passive - does nothing on action
-                                } else if (w == EQUIP_SUPER_DRILL && app->player_inventory[p][w] > 0 && actor->super_drill_count == 0) {
-                                    app->player_inventory[p][w]--;
-                                    actor->super_drill_count = 10;
-                                    actor->drilling += 300;
-                                } else if (w == EQUIP_CLONE && app->player_inventory[p][w] > 0 && world.num_actors < MAX_ACTORS) {
-                                    app->player_inventory[p][w]--;
-                                    Actor* clone = &world.actors[world.num_actors];
-                                    memset(clone, 0, sizeof(Actor));
-                                    clone->kind = ACTOR_CLONE;
-                                    clone->clone_owner = p;
-                                    clone->facing = DIR_RIGHT;
-                                    clone->moving = true;
-                                    clone->max_health = 100;
-                                    clone->health = 100;
-                                    clone->pos.x = actor->pos.x / 10 * 10 + 5;
-                                    clone->pos.y = (actor->pos.y - 30) / 10 * 10 + 35;
-                                    clone->drilling = actor->drilling;
-                                    if (actor->super_drill_count > 0) clone->drilling -= 300;
-                                    clone->animation = 1;
-                                    clone->is_active = true;
-                                    world.num_actors++;
-                                } else if (app->player_inventory[p][w] > 0 && (world.tiles[cy][cx] == TILE_PASSAGE || is_treasure(world.tiles[cy][cx]))) {
-                                    // Placeable weapons
-                                    uint8_t tile = 0; int timer = 0; bool place = true;
-                                    switch (w) {
-                                        case EQUIP_SMALL_BOMB: tile = TILE_SMALL_BOMB1; timer = 100; break;
-                                        case EQUIP_BIG_BOMB: tile = TILE_BIG_BOMB1; timer = 100; break;
-                                        case EQUIP_DYNAMITE: tile = TILE_DYNAMITE1; timer = 80; break;
-                                        case EQUIP_ATOMIC_BOMB: tile = TILE_ATOMIC1; timer = 280; break;
-                                        case EQUIP_SMALL_RADIO:
-                                            switch (p) {
-                                                case 0: tile = TILE_SMALL_RADIO_BLUE; break;
-                                                case 1: tile = TILE_SMALL_RADIO_RED; break;
-                                                case 2: tile = TILE_SMALL_RADIO_GREEN; break;
-                                                case 3: tile = TILE_SMALL_RADIO_YELLOW; break;
-                                            }
-                                            timer = 0; break;
-                                        case EQUIP_LARGE_RADIO:
-                                            switch (p) {
-                                                case 0: tile = TILE_BIG_RADIO_BLUE; break;
-                                                case 1: tile = TILE_BIG_RADIO_RED; break;
-                                                case 2: tile = TILE_BIG_RADIO_GREEN; break;
-                                                case 3: tile = TILE_BIG_RADIO_YELLOW; break;
-                                            }
-                                            timer = 0; break;
-                                        case EQUIP_GRENADE:
-                                            switch (actor->facing) {
-                                                case DIR_RIGHT: tile = TILE_GRENADE_FLY_R; break;
-                                                case DIR_LEFT:  tile = TILE_GRENADE_FLY_L; break;
-                                                case DIR_UP:    tile = TILE_GRENADE_FLY_U; break;
-                                                case DIR_DOWN:  tile = TILE_GRENADE_FLY_D; break;
-                                            }
-                                            timer = 1; break;
-                                        case EQUIP_MINE: tile = TILE_MINE; timer = 0; break;
-                                        case EQUIP_NAPALM: tile = TILE_NAPALM1; timer = 260; break;
-                                        case EQUIP_BARREL: tile = TILE_BARREL; timer = 0; break;
-                                        case EQUIP_SMALL_CRUCIFIX: tile = TILE_SMALL_CRUCIFIX_BOMB; timer = 100; break;
-                                        case EQUIP_LARGE_CRUCIFIX: tile = TILE_LARGE_CRUCIFIX_BOMB; timer = 100; break;
-                                        case EQUIP_PLASTIC:
-                                            tile = TILE_PLASTIC_BOMB; timer = 100;
-                                            if (app->sound_urethan) context_play_sample_freq(app->sound_urethan, 11000);
-                                            break;
-                                        case EQUIP_EXPLOSIVE_PLASTIC:
-                                            tile = TILE_EXPLOSIVE_PLASTIC_BOMB; timer = 90;
-                                            if (app->sound_urethan) context_play_sample_freq(app->sound_urethan, 11000);
-                                            break;
-                                        case EQUIP_DIGGER: tile = TILE_DIGGER_BOMB; timer = 100; break;
-                                        case EQUIP_METAL_WALL: tile = TILE_METAL_WALL_PLACED; timer = 1; break;
-                                        case EQUIP_TELEPORT: tile = TILE_TELEPORT; timer = 0; break;
-                                        case EQUIP_BIOMASS:
-                                            tile = TILE_BIOMASS; timer = rand() % 80;
-                                            if (app->sound_urethan) context_play_sample_freq(app->sound_urethan, 11000);
-                                            break;
-                                        case EQUIP_JUMPING_BOMB:
-                                            tile = TILE_JUMPING_BOMB; timer = 80 + rand() % 80;
-                                            break;
-                                        default: place = false; break;
-                                    }
-                                    if (place) {
-                                        world.tiles[cy][cx] = tile;
-                                        world.timer[cy][cx] = timer;
-                                        if (w == EQUIP_JUMPING_BOMB) world.hits[cy][cx] = 5;
-                                        if (w == EQUIP_BIOMASS) world.hits[cy][cx] = 400;
-                                        app->player_inventory[p][w]--;
-                                    }
-                                }
-                            }
-                        } break;
-                        case ACT_CYCLE: {
-                            for (int i = 1; i < EQUIP_TOTAL; ++i) {
-                                int w = (actor->selected_weapon + i) % EQUIP_TOTAL;
-                                if (w == EQUIP_SMALL_PICKAXE || w == EQUIP_LARGE_PICKAXE || w == EQUIP_DRILL || w == EQUIP_ARMOR) continue;
-                                if (app->player_inventory[p][w] > 0) {
-                                    actor->selected_weapon = w;
-                                    break;
-                                }
-                            }
-                        } break;
-                        case ACT_REMOTE: {
-                            // Detonate all radio bombs belonging to this player
-                            for (int ry = 0; ry < MAP_HEIGHT; ry++)
-                                for (int rx = 0; rx < MAP_WIDTH; rx++)
-                                    if (is_radio_for(world.tiles[ry][rx], p))
-                                        world.timer[ry][rx] = 1;
-                        } break;
-                        default: break;
+                    if (!actor->is_dead) {
+                        int dir = inp & NET_INPUT_DIR_MASK;
+                        if (dir == NET_INPUT_UP)    { actor->facing = DIR_UP;    actor->moving = true; }
+                        else if (dir == NET_INPUT_DOWN)  { actor->facing = DIR_DOWN;  actor->moving = true; }
+                        else if (dir == NET_INPUT_LEFT)  { actor->facing = DIR_LEFT;  actor->moving = true; }
+                        else if (dir == NET_INPUT_RIGHT) { actor->facing = DIR_RIGHT; actor->moving = true; }
+                        else if (dir == NET_INPUT_STOP)  { actor->moving = false; }
+                        if (inp & NET_INPUT_ACTION) apply_game_action(app, &world, p);
+                        if (inp & NET_INPUT_CYCLE)  apply_game_cycle(app, &world, p);
+                        if (inp & NET_INPUT_REMOTE) apply_game_remote(&world, p);
                     }
                 }
+            }
+        } else
+#endif /* MB_NET */
+        {
+            // === LOCAL PLAY ===
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) {
+                if (e.type == SDL_QUIT) { running = false; quit_requested = true; break; }
 
-                if (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
-                    running = false;
-                    if (world.campaign_mode) quit_requested = true;
-                }
-                if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
-                    running = false;
-                    if (world.campaign_mode) quit_requested = true;
-                }
-                if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F10) {
-                    running = false;
-                    quit_requested = true;
+                for (int p = 0; p < world.num_players; ++p) {
+                    ActionType act = input_map_event(&e, p, &app->input_config);
+
+                    if (act == ACT_GOD && (e.type == SDL_KEYDOWN || e.type == SDL_CONTROLLERBUTTONDOWN)) {
+                        world.god_mode = !world.god_mode;
+                    }
+
+                    if (act != ACT_MAX_PLAYER && act != ACT_GOD && !world.actors[p].is_dead) {
+                        Actor* actor = &world.actors[p];
+                        switch (act) {
+                            case ACT_UP:    actor->facing = DIR_UP;    actor->moving = true; break;
+                            case ACT_DOWN:  actor->facing = DIR_DOWN;  actor->moving = true; break;
+                            case ACT_LEFT:  actor->facing = DIR_LEFT;  actor->moving = true; break;
+                            case ACT_RIGHT: actor->facing = DIR_RIGHT; actor->moving = true; break;
+                            case ACT_STOP:  actor->moving = false; break;
+                            case ACT_ACTION: apply_game_action(app, &world, p); break;
+                            case ACT_CYCLE:  apply_game_cycle(app, &world, p); break;
+                            case ACT_REMOTE: apply_game_remote(&world, p); break;
+                            default: break;
+                        }
+                    }
+
+                    if (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
+                        running = false;
+                        if (world.campaign_mode) quit_requested = true;
+                    }
+                    if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+                        running = false;
+                        if (world.campaign_mode) quit_requested = true;
+                    }
+                    if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F10) {
+                        running = false;
+                        quit_requested = true;
+                    }
                 }
             }
         }
@@ -1921,7 +2080,7 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                                     tele[nt][0] = tx; tele[nt][1] = ty; nt++;
                                 }
                         if (nt > 0) {
-                            int r = rand() % nt;
+                            int r = game_rand() % nt;
                             actor->pos.x = tele[r][0] * 10 + 5;
                             actor->pos.y = tele[r][1] * 10 + 35;
                             actor->moving = false;
@@ -1986,7 +2145,7 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
 
                 // Animation update
                 actor->animation %= 30;
-                if (actor->is_digging && actor->animation == 16) context_play_sample_freq(app->sound_picaxe, 11000 + (rand() % 100));
+                if (actor->is_digging && actor->animation == 16) context_play_sample_freq(app->sound_picaxe, 11000 + (game_rand() % 100));
                 actor->animation++;
             } else { actor->animation = 0; }
           }
@@ -2069,10 +2228,10 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data) {
                             world.tiles[y][x] = TILE_SLIME_CORPSE;
                             world.timer[y][x] = 0;
                         } else if (t == TILE_BIOMASS) {
-                            int clock = 1 + rand() % 140;
+                            int clock = 1 + game_rand() % 140;
                             world.timer[y][x] = clock;
                             int dirs[][2] = {{-1,0},{1,0},{0,-1},{0,1}};
-                            int d = rand() % 4;
+                            int d = game_rand() % 4;
                             int nx = x + dirs[d][0], ny = y + dirs[d][1];
                             if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT && is_passable(world.tiles[ny][nx])) {
                                 world.tiles[ny][nx] = TILE_BIOMASS;

@@ -213,6 +213,9 @@ typedef struct {
 } RoundResult;
 
 void game_init_world(World* world, uint8_t* level_data, int num_players);
-RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data);
+RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, NetContext* net);
+
+void game_seed_rng(uint32_t seed);
+int game_rand(void);
 
 #endif // GAME_H

@@ -5,6 +5,7 @@
 #include "fonts.h"
 #include "glyphs.h"
 #include "input.h"
+#include "net.h"
 
 typedef enum {
     EQUIP_SMALL_BOMB,
@@ -109,6 +110,8 @@ typedef struct {
     InputConfig input_config;
     GameOptions options;
     int current_round;
+
+    NetContext net;
 } App;
 
 bool app_init(App* app, ApplicationContext* ctx);

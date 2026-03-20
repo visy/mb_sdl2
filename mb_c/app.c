@@ -729,6 +729,26 @@ static const uint32_t EQUIPMENT_PRICES[] = {
     1, 3, 10, 650, 15, 65, 300, 25, 500, 80, 90, 35, 145, 15, 80, 120, 50, 400, 1100, 1600, 70, 400, 50, 80, 800, 95, 575
 };
 
+static bool shop_try_buy(App* app, int player, int item) {
+    if (item < 0 || item >= EQUIP_TOTAL) return false;
+    if (app->player_cash[player] >= EQUIPMENT_PRICES[item]) {
+        app->player_cash[player] -= EQUIPMENT_PRICES[item];
+        app->player_inventory[player][item]++;
+        return true;
+    }
+    return false;
+}
+
+static bool shop_try_sell(App* app, int player, int item) {
+    if (item < 0 || item >= EQUIP_TOTAL) return false;
+    if (app->player_inventory[player][item] > 0) {
+        app->player_inventory[player][item]--;
+        app->player_cash[player] += EQUIPMENT_PRICES[item] / 2;
+        return true;
+    }
+    return false;
+}
+
 static void render_shop_ui(App* app, ApplicationContext* ctx, int selected_item[], int shop_players[], int num_panels) {
     SDL_SetRenderTarget(ctx->renderer, ctx->buffer); SDL_RenderCopy(ctx->renderer, app->shop.texture, NULL, NULL);
     SDL_Color yellow = {255, 255, 0, 255}, white = {255, 255, 255, 255}, red = {255, 0, 0, 255};
@@ -912,16 +932,10 @@ static bool app_run_shop_batch(App* app, ApplicationContext* ctx, int players[],
                         case ACT_RIGHT: selected[panel] = (selected[panel] + 1) % (EQUIP_TOTAL + 1); break;
                         case ACT_ACTION:
                             if (selected[panel] == EQUIP_TOTAL) { ready[panel] = true; }
-                            else if (app->player_cash[pi] >= EQUIPMENT_PRICES[selected[panel]]) {
-                                app->player_cash[pi] -= EQUIPMENT_PRICES[selected[panel]];
-                                app->player_inventory[pi][selected[panel]]++;
-                            }
+                            else { shop_try_buy(app, pi, selected[panel]); }
                             break;
                         case ACT_STOP:
-                            if (selected[panel] != EQUIP_TOTAL && app->player_inventory[pi][selected[panel]] > 0) {
-                                app->player_inventory[pi][selected[panel]]--;
-                                app->player_cash[pi] += EQUIPMENT_PRICES[selected[panel]] / 2;
-                            }
+                            if (selected[panel] != EQUIP_TOTAL) { shop_try_sell(app, pi, selected[panel]); }
                             break;
                         default: break;
                     }
@@ -962,7 +976,7 @@ static void app_run_shop(App* app, ApplicationContext* ctx) {
                 lvl_idx = app->current_round % app->level_count;
             }
             context_animate(ctx, ANIMATION_FADE_DOWN, 7);
-            RoundResult result = game_run(app, ctx, app->level_data[lvl_idx]);
+            RoundResult result = game_run(app, ctx, app->level_data[lvl_idx], NULL);
 
             int alive = 0;
             for (int p = 0; p < nplayers; p++) if (result.player_survived[p]) alive++;
@@ -1052,16 +1066,10 @@ static void app_run_campaign(App* app, ApplicationContext* ctx) {
                         case ACT_RIGHT: selected[0] = (selected[0] + 1) % (EQUIP_TOTAL + 1); break;
                         case ACT_ACTION:
                             if (selected[0] == EQUIP_TOTAL) { ready[0] = true; shopping = false; }
-                            else if (app->player_cash[0] >= EQUIPMENT_PRICES[selected[0]]) {
-                                app->player_cash[0] -= EQUIPMENT_PRICES[selected[0]];
-                                app->player_inventory[0][selected[0]]++;
-                            }
+                            else { shop_try_buy(app, 0, selected[0]); }
                             break;
                         case ACT_STOP:
-                            if (selected[0] != EQUIP_TOTAL && app->player_inventory[0][selected[0]] > 0) {
-                                app->player_inventory[0][selected[0]]--;
-                                app->player_cash[0] += EQUIPMENT_PRICES[selected[0]] / 2;
-                            }
+                            if (selected[0] != EQUIP_TOTAL) { shop_try_sell(app, 0, selected[0]); }
                             break;
                         default: break;
                     }
@@ -1074,7 +1082,7 @@ static void app_run_campaign(App* app, ApplicationContext* ctx) {
 
         // Play the level
         context_animate(ctx, ANIMATION_FADE_DOWN, 7);
-        RoundResult result = game_run(app, ctx, app->campaign_levels[app->current_round]);
+        RoundResult result = game_run(app, ctx, app->campaign_levels[app->current_round], NULL);
         app->player_lives += result.lives_gained;
 
         context_linger_music_start(ctx);
@@ -1097,6 +1105,667 @@ static void app_run_campaign(App* app, ApplicationContext* ctx) {
     bool win = (app->current_round >= max_rounds);
     app_run_campaign_end(app, ctx, win);
 }
+
+#ifdef MB_NET
+// ============================================================
+// Networked game: lobby + net shop
+// ============================================================
+
+static void pack_options_to_game_start(const GameOptions* o, NetGameStart* gs) {
+    gs->cash = o->cash;
+    gs->treasures = o->treasures;
+    gs->rounds = o->rounds;
+    gs->round_time_secs = o->round_time_secs;
+    gs->players = o->players;
+    gs->speed = o->speed;
+    gs->bomb_damage = o->bomb_damage;
+    gs->flags = (o->darkness ? 1 : 0) | (o->free_market ? 2 : 0)
+              | (o->selling ? 4 : 0) | (o->win_by_money ? 8 : 0);
+}
+
+static void unpack_game_start_to_options(const NetGameStart* gs, GameOptions* o) {
+    o->cash = gs->cash;
+    o->treasures = gs->treasures;
+    o->rounds = gs->rounds;
+    o->round_time_secs = gs->round_time_secs;
+    o->players = gs->players;
+    o->speed = gs->speed;
+    o->bomb_damage = gs->bomb_damage;
+    o->darkness = (gs->flags & 1) != 0;
+    o->free_market = (gs->flags & 2) != 0;
+    o->selling = (gs->flags & 4) != 0;
+    o->win_by_money = (gs->flags & 8) != 0;
+}
+
+
+// Check if all active net players satisfy a condition array (e.g. all ready)
+static bool net_all_players_check(const NetContext* net, const bool flags[NET_MAX_PLAYERS]) {
+    for (int s = 0; s < NET_MAX_PLAYERS; s++) {
+        if (net_slot_active(net, s) && !flags[s]) return false;
+    }
+    return true;
+}
+
+// Send a SHOP_STATE broadcast for a given player from the server
+static void net_broadcast_shop_state(App* app, NetContext* net, int pi, int cursor) {
+    NetMessage msg = {0};
+    msg.type = NET_MSG_SHOP_STATE;
+    msg.data.shop_state.player_index = pi;
+    msg.data.shop_state.cash = app->player_cash[pi];
+    memcpy(msg.data.shop_state.inventory, app->player_inventory[pi], sizeof(msg.data.shop_state.inventory));
+    msg.data.shop_state.cursor = cursor;
+    net_broadcast(net, &msg);
+}
+
+// Send cursor position to server (client) or broadcast to all (server)
+static void net_send_cursor(App* app, NetContext* net, int cursor) {
+    NetMessage msg = {0};
+    msg.type = NET_MSG_SHOP_CURSOR;
+    msg.data.shop_cursor.player_index = net->local_player;
+    msg.data.shop_cursor.cursor = cursor;
+    if (net->is_server)
+        net_broadcast(net, &msg);
+    else
+        net_send_to(net->server_peer, &msg);
+    (void)app;
+}
+
+// Returns false if a peer disconnected or quit was requested.
+static bool app_run_net_shop(App* app, ApplicationContext* ctx) {
+    NetContext* net = &app->net;
+    int local = net->local_player;
+    int cursors[NET_MAX_PLAYERS] = {0};
+    bool ready_local = false;
+    bool all_ready = false;
+    bool shop_ready[NET_MAX_PLAYERS] = {false};
+
+    context_play_music_at(ctx, "OEKU.S3M", 83);
+
+    // Build panel list: active players in slot order, matching local multiplayer layout
+    // For 2 players, swap so lower-index player is on right (panel 1) like local MP
+    int panels[NET_MAX_PLAYERS];
+    int num_panels = 0;
+    for (int s = 0; s < NET_MAX_PLAYERS; s++) {
+        if (net_slot_active(net, s))
+            panels[num_panels++] = s;
+    }
+    if (num_panels == 2) {
+        int tmp = panels[0]; panels[0] = panels[1]; panels[1] = tmp;
+    }
+
+    while (!all_ready) {
+        // Render shop UI for all panels, same as local multiplayer
+        {
+            int sel_arr[NET_MAX_PLAYERS];
+            for (int i = 0; i < num_panels; i++)
+                sel_arr[i] = cursors[panels[i]];
+            render_shop_ui(app, ctx, sel_arr, panels, num_panels);
+        }
+        context_present(ctx);
+
+        // All netgame players use player 0 (local) controls
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) { return false; }
+            if (ready_local) continue;
+            ActionType act = input_map_event(&e, 0, &app->input_config);
+            if (act == ACT_MAX_PLAYER) continue;
+            int prev_cursor = cursors[local];
+            switch (act) {
+                case ACT_UP:    if (cursors[local] >= 4) cursors[local] -= 4; break;
+                case ACT_DOWN:  if (cursors[local] + 4 <= EQUIP_TOTAL) cursors[local] += 4; else cursors[local] = EQUIP_TOTAL; break;
+                case ACT_LEFT:  cursors[local] = (cursors[local] + EQUIP_TOTAL) % (EQUIP_TOTAL + 1); break;
+                case ACT_RIGHT: cursors[local] = (cursors[local] + 1) % (EQUIP_TOTAL + 1); break;
+                case ACT_ACTION:
+                    if (cursors[local] == EQUIP_TOTAL) {
+                        ready_local = true;
+                        if (net->is_server) {
+                            shop_ready[local] = true;
+                            if (net_all_players_check(net, shop_ready)) {
+                                NetMessage msg = {0};
+                                msg.type = NET_MSG_SHOP_ALL_READY;
+                                msg.data.shop_all_ready.next_round = app->current_round;
+                                net_broadcast(net, &msg);
+                                all_ready = true;
+                            }
+                        } else {
+                            NetMessage msg = {0};
+                            msg.type = NET_MSG_SHOP_READY;
+                            msg.data.shop_ready.player_index = local;
+                            net_send_to(net->server_peer, &msg);
+                        }
+                    } else {
+                        if (net->is_server) {
+                            if (shop_try_buy(app, local, cursors[local]))
+                                net_broadcast_shop_state(app, net, local, cursors[local]);
+                        } else {
+                            NetMessage msg = {0};
+                            msg.type = NET_MSG_SHOP_ACTION;
+                            msg.data.shop_action.player_index = local;
+                            msg.data.shop_action.action = SHOP_ACT_BUY;
+                            msg.data.shop_action.item_index = cursors[local];
+                            net_send_to(net->server_peer, &msg);
+                        }
+                    }
+                    break;
+                case ACT_STOP:
+                    if (cursors[local] != EQUIP_TOTAL) {
+                        if (net->is_server) {
+                            if (shop_try_sell(app, local, cursors[local]))
+                                net_broadcast_shop_state(app, net, local, cursors[local]);
+                        } else {
+                            NetMessage msg = {0};
+                            msg.type = NET_MSG_SHOP_ACTION;
+                            msg.data.shop_action.player_index = local;
+                            msg.data.shop_action.action = SHOP_ACT_SELL;
+                            msg.data.shop_action.item_index = cursors[local];
+                            net_send_to(net->server_peer, &msg);
+                        }
+                    }
+                    break;
+                default: break;
+            }
+            if (cursors[local] != prev_cursor)
+                net_send_cursor(app, net, cursors[local]);
+        }
+
+        // Poll network
+        NetMessage net_msg;
+        ENetPeer* from;
+        while (net_poll(net, &net_msg, &from) > 0) {
+            switch (net_msg.type) {
+                case NET_MSG_SHOP_ACTION:
+                    if (net->is_server) {
+                        int pi = net_msg.data.shop_action.player_index;
+                        if (pi >= 0 && pi < NET_MAX_PLAYERS) {
+                            if (net_msg.data.shop_action.action == SHOP_ACT_BUY)
+                                shop_try_buy(app, pi, net_msg.data.shop_action.item_index);
+                            else
+                                shop_try_sell(app, pi, net_msg.data.shop_action.item_index);
+                            net_broadcast_shop_state(app, net, pi, net_msg.data.shop_action.item_index);
+                        }
+                    }
+                    break;
+                case NET_MSG_SHOP_STATE: {
+                    int pi = net_msg.data.shop_state.player_index;
+                    if (pi >= 0 && pi < NET_MAX_PLAYERS) {
+                        app->player_cash[pi] = net_msg.data.shop_state.cash;
+                        memcpy(app->player_inventory[pi], net_msg.data.shop_state.inventory, sizeof(app->player_inventory[pi]));
+                        cursors[pi] = net_msg.data.shop_state.cursor;
+                    }
+                    break;
+                }
+                case NET_MSG_SHOP_CURSOR: {
+                    int pi = net_msg.data.shop_cursor.player_index;
+                    if (pi >= 0 && pi < NET_MAX_PLAYERS)
+                        cursors[pi] = net_msg.data.shop_cursor.cursor;
+                    if (net->is_server) {
+                        // Re-broadcast cursor to other clients
+                        net_broadcast(net, &net_msg);
+                    }
+                    break;
+                }
+                case NET_MSG_SHOP_READY:
+                    if (net->is_server) {
+                        int pi = net_msg.data.shop_ready.player_index;
+                        if (pi >= 0 && pi < NET_MAX_PLAYERS) shop_ready[pi] = true;
+                        if (net_all_players_check(net, shop_ready)) {
+                            NetMessage arm = {0};
+                            arm.type = NET_MSG_SHOP_ALL_READY;
+                            arm.data.shop_all_ready.next_round = app->current_round;
+                            net_broadcast(net, &arm);
+                            all_ready = true;
+                        }
+                    }
+                    break;
+                case NET_MSG_SHOP_ALL_READY:
+                    all_ready = true;
+                    break;
+                case NET_MSG_PLAYER_LEAVE:
+                    return false; // peer disconnected, abort netgame
+                default:
+                    break;
+            }
+        }
+
+        SDL_Delay(16);
+    }
+    return true;
+}
+
+static void app_run_netgame(App* app, ApplicationContext* ctx) {
+    NetContext* net = &app->net;
+    SDL_Color white = {255, 255, 255, 255};
+    SDL_Color yellow = {255, 255, 0, 255};
+    SDL_Color green = {0, 255, 0, 255};
+    SDL_Color gray = {128, 128, 128, 255};
+
+    if (!net_init()) return;
+
+    int saved_level_count = app->selected_level_count;
+
+    // Phase A0: Name entry
+    char net_name[NET_PLAYER_NAME_LEN];
+    snprintf(net_name, sizeof(net_name), "%s", app->player_name[0]);
+    int name_cursor = (int)strlen(net_name);
+    {
+        bool entering_name = true;
+        SDL_StartTextInput();
+        while (entering_name) {
+            SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+            SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+            SDL_RenderClear(ctx->renderer);
+            render_text(ctx->renderer, &app->font, 200, 100, white, "NETGAME");
+            render_text(ctx->renderer, &app->font, 160, 140, gray, "ENTER YOUR NAME:");
+            char display[32];
+            snprintf(display, sizeof(display), "%s_", net_name);
+            render_text(ctx->renderer, &app->font, 200, 165, yellow, display);
+            render_text(ctx->renderer, &app->font, 160, 220, gray, "TYPE NAME  ENTER CONFIRM  ESC BACK");
+            SDL_SetRenderTarget(ctx->renderer, NULL);
+            context_present(ctx);
+
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) {
+                if (e.type == SDL_QUIT) { SDL_StopTextInput(); net_shutdown(); return; }
+                if (e.type == SDL_KEYDOWN) {
+                    if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) { SDL_StopTextInput(); net_shutdown(); return; }
+                    if (e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE && name_cursor > 0) {
+                        net_name[--name_cursor] = '\0';
+                    }
+                    if (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER) {
+                        if (name_cursor > 0) entering_name = false;
+                    }
+                }
+                if (e.type == SDL_TEXTINPUT && name_cursor < NET_PLAYER_NAME_LEN - 1) {
+                    char ch = e.text.text[0];
+                    if (ch >= 32 && ch < 127) {
+                        net_name[name_cursor++] = ch;
+                        net_name[name_cursor] = '\0';
+                    }
+                }
+            }
+            SDL_Delay(16);
+        }
+        SDL_StopTextInput();
+    }
+
+    // Phase A: Host/Join selection
+    int choice = 0; // 0=host, 1=join
+    bool selecting = true;
+    while (selecting) {
+        SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+        SDL_RenderClear(ctx->renderer);
+        render_text(ctx->renderer, &app->font, 200, 100, white, "NETGAME");
+        render_text(ctx->renderer, &app->font, 200, 140, choice == 0 ? yellow : gray, "> HOST GAME");
+        render_text(ctx->renderer, &app->font, 200, 160, choice == 1 ? yellow : gray, "> JOIN GAME");
+        render_text(ctx->renderer, &app->font, 160, 220, gray, "UP/DOWN SELECT  ENTER CONFIRM  ESC BACK");
+        SDL_SetRenderTarget(ctx->renderer, NULL);
+        context_present(ctx);
+
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) { net_shutdown(); return; }
+            if (e.type == SDL_KEYDOWN) {
+                if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) { net_shutdown(); return; }
+                if (e.key.keysym.scancode == SDL_SCANCODE_UP) choice = 0;
+                if (e.key.keysym.scancode == SDL_SCANCODE_DOWN) choice = 1;
+                if (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER) selecting = false;
+            }
+        }
+        SDL_Delay(16);
+    }
+
+    // Phase B: Connect
+    if (choice == 0) {
+        // Host
+        if (!net_host_create(net, NET_PORT)) {
+            net_shutdown();
+            return;
+        }
+        snprintf(net->player_names[0], NET_PLAYER_NAME_LEN, "%s", net_name);
+    } else {
+        // Join - hostname entry
+        char hostname[128] = "localhost";
+        int cursor = (int)strlen(hostname);
+        bool entering = true;
+        bool connecting = false;
+        SDL_StartTextInput();
+
+        while (entering) {
+            SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+            SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+            SDL_RenderClear(ctx->renderer);
+            render_text(ctx->renderer, &app->font, 200, 100, white, "ENTER HOST ADDRESS:");
+            char display[140];
+            snprintf(display, sizeof(display), "%s_", hostname);
+            render_text(ctx->renderer, &app->font, 200, 130, yellow, connecting ? "CONNECTING..." : display);
+            render_text(ctx->renderer, &app->font, 160, 200, gray, "TYPE ADDRESS  ENTER CONNECT  ESC BACK");
+            SDL_SetRenderTarget(ctx->renderer, NULL);
+            context_present(ctx);
+
+            if (connecting) {
+                if (!net_client_connect(net, hostname, NET_PORT)) {
+                    // Show failure briefly
+                    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+                    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+                    SDL_RenderClear(ctx->renderer);
+                    SDL_Color red = {255, 0, 0, 255};
+                    render_text(ctx->renderer, &app->font, 200, 140, red, "CONNECTION FAILED");
+                    SDL_SetRenderTarget(ctx->renderer, NULL);
+                    context_present(ctx);
+                    SDL_Delay(2000);
+                    connecting = false;
+                    continue;
+                }
+                SDL_StopTextInput();
+                entering = false;
+                break;
+            }
+
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) {
+                if (e.type == SDL_QUIT) { SDL_StopTextInput(); net_shutdown(); return; }
+                if (e.type == SDL_KEYDOWN) {
+                    if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+                        SDL_StopTextInput();
+                        net_shutdown();
+                        return;
+                    }
+                    if (e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE && cursor > 0) {
+                        hostname[--cursor] = '\0';
+                    }
+                    if (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER) {
+                        connecting = true;
+                    }
+                }
+                if (e.type == SDL_TEXTINPUT && cursor < 126) {
+                    int len = (int)strlen(e.text.text);
+                    if (cursor + len < 127) {
+                        memcpy(hostname + cursor, e.text.text, len);
+                        cursor += len;
+                        hostname[cursor] = '\0';
+                    }
+                }
+            }
+            SDL_Delay(16);
+        }
+    }
+
+    // Phase C: Lobby
+    bool in_lobby = true;
+    bool game_started = false;
+
+    while (in_lobby) {
+        // Render lobby
+        SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+        SDL_RenderClear(ctx->renderer);
+
+        render_text(ctx->renderer, &app->font, 260, 10, white, "LOBBY");
+        char info[128];
+        snprintf(info, sizeof(info), "CASH:%u ROUNDS:%u SPEED:%u", app->options.cash, app->options.rounds, app->options.speed);
+        render_text(ctx->renderer, &app->font, 160, 30, gray, info);
+        snprintf(info, sizeof(info), "PORT:%d  PLAYERS:%d", NET_PORT, net->player_count);
+        render_text(ctx->renderer, &app->font, 200, 44, gray, info);
+
+        // Player avatars and names
+        for (int i = 0; i < NET_MAX_PLAYERS; i++) {
+            int ax = 32 + 150 * i;
+            if (net_slot_active(net, i)) {
+                // Draw win portrait preview
+                if (app->avatar_win[i].texture) {
+                    SDL_Rect dest = {ax, 70, 132, 218};
+                    SDL_RenderCopy(ctx->renderer, app->avatar_win[i].texture, NULL, &dest);
+                }
+                const char* name = net->player_names[i][0] ? net->player_names[i] : "???";
+                render_text(ctx->renderer, &app->font, ax + 4, 292, net->player_ready[i] ? green : white, name);
+                render_text(ctx->renderer, &app->font, ax + 4, 308,
+                            net->player_ready[i] ? green : gray,
+                            net->player_ready[i] ? "READY" : "waiting");
+            } else {
+                // Empty slot - dim placeholder
+                render_text(ctx->renderer, &app->font, ax + 30, 170, gray, "---");
+            }
+        }
+
+        if (net->is_server)
+            render_text(ctx->renderer, &app->font, 140, 340, gray, "ENTER=TOGGLE READY  ESC=QUIT");
+        else
+            render_text(ctx->renderer, &app->font, 140, 340, gray, "ENTER=TOGGLE READY  ESC=DISCONNECT");
+
+        context_present(ctx);
+
+        // Input
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) { net_disconnect(net); net_shutdown(); return; }
+            if (e.type == SDL_KEYDOWN) {
+                if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+                    net_disconnect(net);
+                    net_shutdown();
+                    return;
+                }
+                if (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER) {
+                    net->player_ready[net->local_player] = !net->player_ready[net->local_player];
+                    if (net->is_server) {
+                        // Broadcast ready update
+                        NetMessage msg = {0};
+                        msg.type = NET_MSG_READY_UPDATE;
+                        memcpy(msg.data.ready_update.ready, net->player_ready, sizeof(msg.data.ready_update.ready));
+                        net_broadcast(net, &msg);
+
+                        // Check if all ready and we have 2+ players
+                        if (net->player_count >= 2 && net_all_players_check(net, net->player_ready)) {
+                                // Generate level list now so it's included in GAME_START
+                                app->options.players = (uint8_t)net->player_count;
+                                if (app->selected_level_count == 0 && app->level_count > 0) {
+                                    int count = app->options.rounds;
+                                    if (count > 128) count = 128;
+                                    int pool[128];
+                                    for (int i = 0; i < app->level_count; i++) pool[i] = i;
+                                    int filled = 0;
+                                    while (filled < count) {
+                                        for (int i = app->level_count - 1; i > 0; i--) {
+                                            int j = rand() % (i + 1);
+                                            int tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+                                        }
+                                        int take = count - filled;
+                                        if (take > app->level_count) take = app->level_count;
+                                        for (int i = 0; i < take; i++)
+                                            app->selected_levels[filled++] = pool[i] + 1;
+                                    }
+                                    app->selected_level_count = count;
+                                }
+                                // Send GAME_START with level selection
+                                NetMessage gs = {0};
+                                gs.type = NET_MSG_GAME_START;
+                                pack_options_to_game_start(&app->options, &gs.data.game_start);
+                                gs.data.game_start.level_count = app->selected_level_count;
+                                gs.data.game_start.rng_seed = (uint32_t)SDL_GetTicks() ^ 0xDEADBEEF;
+                                if (app->selected_level_count > 0)
+                                    memcpy(gs.data.game_start.selected_levels, app->selected_levels,
+                                           app->selected_level_count * sizeof(int));
+                                net_broadcast(net, &gs);
+                                game_seed_rng(gs.data.game_start.rng_seed);
+                                game_started = true;
+                                in_lobby = false;
+                        }
+                    } else {
+                        // Send ready to server
+                        NetMessage msg = {0};
+                        msg.type = NET_MSG_PLAYER_READY;
+                        msg.data.player_ready.player_index = net->local_player;
+                        msg.data.player_ready.is_ready = net->player_ready[net->local_player];
+                        net_send_to(net->server_peer, &msg);
+                    }
+                }
+            }
+        }
+
+        // Poll network
+        NetMessage net_msg;
+        ENetPeer* from;
+        while (net_poll(net, &net_msg, &from) > 0) {
+            switch (net_msg.type) {
+                case NET_MSG_SERVER_INFO: {
+                    // Client received server info
+                    net->local_player = net_msg.data.server_info.assigned_index;
+                    net->player_count = net_msg.data.server_info.player_count;
+                    memcpy(net->player_names, net_msg.data.server_info.player_names, sizeof(net->player_names));
+                    // Set our name in the slot
+                    snprintf(net->player_names[net->local_player], NET_PLAYER_NAME_LEN, "%s", net_name);
+                    // Tell server our name
+                    NetMessage join = {0};
+                    join.type = NET_MSG_PLAYER_JOIN;
+                    join.data.player_join.player_index = net->local_player;
+                    snprintf(join.data.player_join.player_name, NET_PLAYER_NAME_LEN, "%s", net_name);
+                    net_send_to(net->server_peer, &join);
+                    break;
+                }
+                case NET_MSG_PLAYER_JOIN: {
+                    int pi = net_msg.data.player_join.player_index;
+                    if (pi >= 0 && pi < NET_MAX_PLAYERS) {
+                        snprintf(net->player_names[pi], NET_PLAYER_NAME_LEN, "%s", net_msg.data.player_join.player_name);
+                        if (net->is_server) {
+                            // Re-broadcast to all clients so everyone knows the name
+                            net_broadcast(net, &net_msg);
+                        } else {
+                            // Recount players from names
+                            int cnt = 0;
+                            for (int s = 0; s < NET_MAX_PLAYERS; s++)
+                                if (net->player_names[s][0]) cnt++;
+                            net->player_count = cnt;
+                        }
+                    }
+                    break;
+                }
+                case NET_MSG_PLAYER_LEAVE: {
+                    int pi = net_msg.data.player_leave.player_index;
+                    if (pi >= 0 && pi < NET_MAX_PLAYERS) {
+                        net->player_names[pi][0] = '\0';
+                        net->player_ready[pi] = false;
+                        if (!net->is_server) {
+                            int cnt = 0;
+                            for (int s = 0; s < NET_MAX_PLAYERS; s++)
+                                if (net->player_names[s][0]) cnt++;
+                            net->player_count = cnt;
+                        }
+                    }
+                    if (!net->is_server && pi == -1) {
+                        // Server disconnected
+                        net_disconnect(net);
+                        net_shutdown();
+                        return;
+                    }
+                    break;
+                }
+                case NET_MSG_PLAYER_READY:
+                    if (net->is_server) {
+                        int pi = net_msg.data.player_ready.player_index;
+                        if (pi >= 0 && pi < NET_MAX_PLAYERS) {
+                            net->player_ready[pi] = net_msg.data.player_ready.is_ready;
+                            // Broadcast ready update
+                            NetMessage ru = {0};
+                            ru.type = NET_MSG_READY_UPDATE;
+                            memcpy(ru.data.ready_update.ready, net->player_ready, sizeof(ru.data.ready_update.ready));
+                            net_broadcast(net, &ru);
+                        }
+                    }
+                    break;
+                case NET_MSG_READY_UPDATE:
+                    memcpy(net->player_ready, net_msg.data.ready_update.ready, sizeof(net->player_ready));
+                    break;
+                case NET_MSG_GAME_START: {
+                    unpack_game_start_to_options(&net_msg.data.game_start, &app->options);
+                    app->selected_level_count = net_msg.data.game_start.level_count;
+                    if (app->selected_level_count > 0)
+                        memcpy(app->selected_levels, net_msg.data.game_start.selected_levels,
+                               app->selected_level_count * sizeof(int));
+                    game_seed_rng(net_msg.data.game_start.rng_seed);
+                    game_started = true;
+                    in_lobby = false;
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+
+        SDL_Delay(16);
+    }
+
+    if (!game_started) {
+        net_disconnect(net);
+        net_shutdown();
+        return;
+    }
+
+    // Initialize game state for net play — force multiplayer mode
+    app->options.players = (uint8_t)net->player_count;
+    app->current_round = 0;
+    for (int p = 0; p < MAX_PLAYERS; ++p) {
+        app->player_cash[p] = app->options.cash;
+        app->player_rounds_won[p] = 0;
+        memset(app->player_inventory[p], 0, sizeof(app->player_inventory[p]));
+    }
+    // Copy net player names into app player slots
+    for (int p = 0; p < NET_MAX_PLAYERS; p++) {
+        if (net->player_names[p][0])
+            snprintf(app->player_name[p], sizeof(app->player_name[p]), "%s", net->player_names[p]);
+    }
+
+    // Run net shop + gameplay rounds
+    bool aborted = false;
+    for (int round = 0; round < app->options.rounds && !aborted; round++) {
+        app->current_round = round;
+        if (!app_run_net_shop(app, ctx)) { aborted = true; break; }
+        if (!net->connected) { aborted = true; break; }
+
+        // Determine level
+        if (app->level_count > 0) {
+            int lvl_idx;
+            if (app->selected_level_count > 0 && round < app->selected_level_count) {
+                int sel = app->selected_levels[round];
+                if (sel == 0) lvl_idx = round % app->level_count;
+                else lvl_idx = sel - 1;
+            } else {
+                lvl_idx = round % app->level_count;
+            }
+
+            context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+            RoundResult result = game_run(app, ctx, app->level_data[lvl_idx], net);
+
+            // Process round result
+            int nplayers = app->options.players;
+            int alive = 0;
+            for (int p = 0; p < nplayers; p++) if (result.player_survived[p]) alive++;
+            if (alive > 0 && alive < nplayers) {
+                for (int p = 0; p < nplayers; p++)
+                    if (result.player_survived[p]) app->player_rounds_won[p]++;
+            }
+            for (int p = 0; p < nplayers; p++)
+                if (app->player_cash[p] < 100) app->player_cash[p] += 150;
+
+            context_linger_music_start(ctx);
+            context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+            context_linger_music_end(ctx);
+
+            if (result.end_type == ROUND_END_FINAL) { aborted = true; break; }
+        }
+    }
+
+    // Victory screen (unless aborted by disconnect)
+    if (!aborted) {
+        context_stop_music(ctx);
+        app_run_victory_screen(app, ctx);
+    }
+
+    app->selected_level_count = saved_level_count;
+    net_disconnect(net);
+    net_shutdown();
+}
+#endif /* MB_NET */
 
 void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
     (void)campaign_mode;
@@ -1127,6 +1796,9 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
                 else if (act == ACT_LEFT && selected == MENU_INFO) { entering_debug = true; debug_func = app_run_sound_test; navigating = false; }
                 else if (act == ACT_RIGHT && selected == MENU_INFO) { entering_debug = true; debug_func = app_run_level_test; navigating = false; }
                 else if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_M) { entering_debug = true; debug_func = app_run_music_debugger; navigating = false; }
+#ifdef MB_NET
+                else if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F1) { entering_debug = true; debug_func = app_run_netgame; navigating = false; }
+#endif
             }
             SDL_Delay(1);
         }
