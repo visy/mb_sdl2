@@ -21,18 +21,16 @@ typedef struct {
     SDL_Window* window;
     SDL_Renderer* renderer;
     SDL_Texture* buffer;
-    SDL_Rect viewport;          // centered 2x game area within fullscreen
-    SDL_Texture* border_texture; // main menu texture for left/right padding strips
-    int border_strip_w;         // width of source strip in the 640x480 texture
+    SDL_Rect viewport;          // centered scaled game area within fullscreen
     s3m_t* music;
     bool music_loaded;
     char current_music[64];
     SDL_GameController* pad;
 } ApplicationContext;
 
-void context_set_border(ApplicationContext* ctx, SDL_Texture* texture, int strip_width);
 
-void context_init(ApplicationContext* ctx, const char* game_dir);
+void context_init(ApplicationContext* ctx, const char* game_dir, bool windowed);
+void context_toggle_fullscreen(ApplicationContext* ctx);
 void context_destroy(ApplicationContext* ctx);
 void context_wait_frame(ApplicationContext* ctx);
 bool context_poll_events(ApplicationContext* ctx);

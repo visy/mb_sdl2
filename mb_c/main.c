@@ -12,7 +12,7 @@ int main(int argc, char** argv) {
     printf("Campaign Mode: %s\n", args.campaign_mode ? "true" : "false");
 
     ApplicationContext ctx;
-    context_init(&ctx, args.path);
+    context_init(&ctx, args.path, args.windowed);
 
     App app;
     if (!app_init(&app, &ctx)) {

@@ -8,6 +8,7 @@
 typedef struct {
     char path[MAX_PATH];
     bool campaign_mode;
+    bool windowed;
 } Args;
 
 void parse_args(int argc, char** argv, Args* out_args);

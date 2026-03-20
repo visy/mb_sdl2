@@ -23,23 +23,7 @@ static void build_path(const char* dir, const char* filename, char* out, size_t 
 #endif
 }
 
-void context_init(ApplicationContext* ctx, const char* game_dir) {
-    memset(ctx, 0, sizeof(ApplicationContext));
-    strncpy(ctx->game_dir, game_dir, MAX_PATH - 1);
-
-    printf("Initializing SDL...\n"); fflush(stdout);
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) < 0) {
-        report_sdl_error("Failed to initialize SDL");
-    }
-
-    ctx->window = SDL_CreateWindow("Mine Bombers", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        0, 0, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_SHOWN);
-    if (!ctx->window) report_sdl_error("Failed to create window");
-
-    ctx->renderer = SDL_CreateRenderer(ctx->window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
-    if (!ctx->renderer) report_sdl_error("Failed to create renderer");
-
-    // Compute centered 2x viewport (1280x960) within the fullscreen resolution
+static void compute_viewport(ApplicationContext* ctx) {
     int out_w, out_h;
     SDL_GetRendererOutputSize(ctx->renderer, &out_w, &out_h);
     int scale_x = out_w / SCREEN_WIDTH;
@@ -52,9 +36,42 @@ void context_init(ApplicationContext* ctx, const char* game_dir) {
     ctx->viewport.y = (out_h - vh) / 2;
     ctx->viewport.w = vw;
     ctx->viewport.h = vh;
+}
 
-    ctx->border_texture = NULL;
-    ctx->border_strip_w = 30;
+void context_toggle_fullscreen(ApplicationContext* ctx) {
+    Uint32 flags = SDL_GetWindowFlags(ctx->window);
+    if (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) {
+        SDL_SetWindowFullscreen(ctx->window, 0);
+        SDL_SetWindowSize(ctx->window, SCREEN_WIDTH * 2, SCREEN_HEIGHT * 2);
+        SDL_SetWindowPosition(ctx->window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    } else {
+        SDL_SetWindowFullscreen(ctx->window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    }
+    compute_viewport(ctx);
+}
+
+void context_init(ApplicationContext* ctx, const char* game_dir, bool windowed) {
+    memset(ctx, 0, sizeof(ApplicationContext));
+    strncpy(ctx->game_dir, game_dir, MAX_PATH - 1);
+
+    printf("Initializing SDL...\n"); fflush(stdout);
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) < 0) {
+        report_sdl_error("Failed to initialize SDL");
+    }
+
+    if (windowed) {
+        ctx->window = SDL_CreateWindow("Mine Bombers", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            SCREEN_WIDTH * 2, SCREEN_HEIGHT * 2, SDL_WINDOW_SHOWN);
+    } else {
+        ctx->window = SDL_CreateWindow("Mine Bombers", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            0, 0, SDL_WINDOW_FULLSCREEN_DESKTOP | SDL_WINDOW_SHOWN);
+    }
+    if (!ctx->window) report_sdl_error("Failed to create window");
+
+    ctx->renderer = SDL_CreateRenderer(ctx->window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
+    if (!ctx->renderer) report_sdl_error("Failed to create renderer");
+
+    compute_viewport(ctx);
 
     ctx->buffer = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_TARGET, 640, 480);
     
@@ -106,6 +123,11 @@ bool context_poll_events(ApplicationContext* ctx) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) return false;
+        if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_RETURN
+            && (e.key.keysym.mod & KMOD_ALT)) {
+            context_toggle_fullscreen(ctx);
+            continue;
+        }
         if (e.type == SDL_CONTROLLERDEVICEADDED && !ctx->pad) {
             if (SDL_IsGameController(e.cdevice.which)) {
                 ctx->pad = SDL_GameControllerOpen(e.cdevice.which);
@@ -150,20 +172,6 @@ void context_animate(ApplicationContext* ctx, Animation animation, int steps) {
         SDL_SetTextureAlphaMod(ctx->buffer, (Uint8)alpha);
         SDL_RenderCopy(ctx->renderer, ctx->buffer, NULL, &ctx->viewport);
 
-        // Render border strips during animation too
-        if (ctx->border_texture && ctx->viewport.x > 0) {
-            int sw = ctx->border_strip_w;
-            SDL_SetTextureBlendMode(ctx->border_texture, SDL_BLENDMODE_BLEND);
-            SDL_SetTextureAlphaMod(ctx->border_texture, (Uint8)alpha);
-            SDL_Rect src_l = { 0, 0, sw, SCREEN_HEIGHT };
-            SDL_Rect dst_l = { 0, ctx->viewport.y, ctx->viewport.x, ctx->viewport.h };
-            SDL_RenderCopy(ctx->renderer, ctx->border_texture, &src_l, &dst_l);
-            SDL_Rect src_r = { SCREEN_WIDTH - sw, 0, sw, SCREEN_HEIGHT };
-            SDL_Rect dst_r = { ctx->viewport.x + ctx->viewport.w, ctx->viewport.y,
-                               ctx->viewport.x, ctx->viewport.h };
-            SDL_RenderCopy(ctx->renderer, ctx->border_texture, &src_r, &dst_r);
-            SDL_SetTextureAlphaMod(ctx->border_texture, 255);
-        }
 
         SDL_RenderPresent(ctx->renderer);
         SDL_Delay(16);
@@ -179,26 +187,8 @@ void context_present(ApplicationContext* ctx) {
     // Render game buffer scaled to centered viewport
     SDL_RenderCopy(ctx->renderer, ctx->buffer, NULL, &ctx->viewport);
 
-    // Render border strips from main menu texture in the left/right padding
-    if (ctx->border_texture && ctx->viewport.x > 0) {
-        int sw = ctx->border_strip_w;
-        // Left strip: source from left edge of main menu
-        SDL_Rect src_l = { 0, 0, sw, SCREEN_HEIGHT };
-        SDL_Rect dst_l = { 0, ctx->viewport.y, ctx->viewport.x, ctx->viewport.h };
-        SDL_RenderCopy(ctx->renderer, ctx->border_texture, &src_l, &dst_l);
-        // Right strip: source from right edge of main menu
-        SDL_Rect src_r = { SCREEN_WIDTH - sw, 0, sw, SCREEN_HEIGHT };
-        SDL_Rect dst_r = { ctx->viewport.x + ctx->viewport.w, ctx->viewport.y,
-                           ctx->viewport.x, ctx->viewport.h };
-        SDL_RenderCopy(ctx->renderer, ctx->border_texture, &src_r, &dst_r);
-    }
 
     SDL_RenderPresent(ctx->renderer);
-}
-
-void context_set_border(ApplicationContext* ctx, SDL_Texture* texture, int strip_width) {
-    ctx->border_texture = texture;
-    ctx->border_strip_w = strip_width;
 }
 
 void context_render_texture(ApplicationContext* ctx, SDL_Texture* texture) {
@@ -212,7 +202,14 @@ SDL_Scancode context_wait_key_pressed(ApplicationContext* ctx) {
     while (true) {
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) return SDL_SCANCODE_ESCAPE;
-            if (e.type == SDL_KEYDOWN && !e.key.repeat) return e.key.keysym.scancode;
+            if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+                if (e.key.keysym.scancode == SDL_SCANCODE_RETURN && (e.key.keysym.mod & KMOD_ALT)) {
+                    context_toggle_fullscreen(ctx);
+                    context_present(ctx);
+                    continue;
+                }
+                return e.key.keysym.scancode;
+            }
             
             if (e.type == SDL_CONTROLLERDEVICEADDED && !ctx->pad) {
                 if (SDL_IsGameController(e.cdevice.which)) {

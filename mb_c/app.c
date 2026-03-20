@@ -64,7 +64,6 @@ bool app_init(App* app, ApplicationContext* ctx) {
 
     if (!context_load_spy(ctx, "TITLEBE.SPY", &app->title)) return false;
     if (!context_load_spy(ctx, "MAIN3.SPY", &app->main_menu)) return false;
-    context_set_border(ctx, app->main_menu.texture, 30);
     if (!context_load_spy(ctx, "SIKA.SPY", &app->sika)) return false;
     if (!context_load_spy(ctx, "SHOPPIC.SPY", &app->shop)) return false;
     if (!context_load_spy(ctx, "PLAYERS.SPY", &app->players)) return false;

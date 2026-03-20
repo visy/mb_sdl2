@@ -31,15 +31,18 @@ static bool is_dir(const char* path) {
 
 void parse_args(int argc, char** argv, Args* out_args) {
     out_args->campaign_mode = false;
+    out_args->windowed = false;
     out_args->path[0] = '\0';
 
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--campaign") == 0) {
             out_args->campaign_mode = true;
+        } else if (strcmp(argv[i], "-w") == 0 || strcmp(argv[i], "--windowed") == 0) {
+            out_args->windowed = true;
         } else if (strcmp(argv[i], "--help") == 0) {
             fprintf(stderr, "MineBombers 3.11\n\n");
             fprintf(stderr, "USAGE:\n");
-            fprintf(stderr, "    mb-reloaded [--campaign] [game-path]\n");
+            fprintf(stderr, "    mb-reloaded [--campaign] [-w] [game-path]\n");
             exit(0);
         } else {
             strncpy(out_args->path, argv[i], MAX_PATH - 1);
