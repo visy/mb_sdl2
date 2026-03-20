@@ -1752,7 +1752,7 @@ static bool net_exchange_inputs(NetContext* net, uint8_t local_input,
                 if (net_slot_active(net, s) && !received[s]) { have_all = false; break; }
             }
             if (have_all) break;
-            if (SDL_GetTicks() - start > 2000) return false; // timeout
+            if (SDL_GetTicks() - start > 2000) return false;
 
             NetMessage msg;
             ENetPeer* from;
@@ -1767,7 +1767,6 @@ static bool net_exchange_inputs(NetContext* net, uint8_t local_input,
                     return false;
                 }
             }
-            SDL_Delay(1);
         }
 
         // Broadcast combined tick to all clients
@@ -1776,6 +1775,7 @@ static bool net_exchange_inputs(NetContext* net, uint8_t local_input,
         tick.data.game_tick.frame = frame;
         memcpy(tick.data.game_tick.inputs, all_inputs, NET_MAX_PLAYERS);
         net_broadcast(net, &tick);
+        net_flush(net);
         return true;
     } else {
         // Client: send input to server
@@ -1785,6 +1785,7 @@ static bool net_exchange_inputs(NetContext* net, uint8_t local_input,
         msg.data.game_input.player_index = net->local_player;
         msg.data.game_input.input = local_input;
         net_send_to(net->server_peer, &msg);
+        net_flush(net);
 
         // Wait for tick from server
         Uint32 start = SDL_GetTicks();
@@ -1799,9 +1800,8 @@ static bool net_exchange_inputs(NetContext* net, uint8_t local_input,
                     return false;
                 }
             }
-            SDL_Delay(1);
         }
-        return false; // timeout
+        return false;
     }
 }
 #endif /* MB_NET */

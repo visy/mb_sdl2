@@ -135,6 +135,10 @@ void net_broadcast(NetContext* ctx, const NetMessage* msg) {
     }
 }
 
+void net_flush(NetContext* ctx) {
+    if (ctx->host) enet_host_flush(ctx->host);
+}
+
 bool net_slot_active(const NetContext* ctx, int slot) {
     if (slot < 0 || slot >= NET_MAX_PLAYERS) return false;
     if (ctx->is_server) {

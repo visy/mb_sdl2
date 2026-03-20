@@ -1170,167 +1170,202 @@ static void net_send_cursor(App* app, NetContext* net, int cursor) {
     (void)app;
 }
 
-// Returns false if a peer disconnected or quit was requested.
-static bool app_run_net_shop(App* app, ApplicationContext* ctx) {
+// Returns: 1=all ready, 0=disconnect, -1=F10 quit match
+static int app_run_net_shop(App* app, ApplicationContext* ctx) {
     NetContext* net = &app->net;
     int local = net->local_player;
     int cursors[NET_MAX_PLAYERS] = {0};
-    bool ready_local = false;
-    bool all_ready = false;
-    bool shop_ready[NET_MAX_PLAYERS] = {false};
 
     context_play_music_at(ctx, "OEKU.S3M", 83);
 
-    // Build panel list: active players in slot order, matching local multiplayer layout
-    // For 2 players, swap so lower-index player is on right (panel 1) like local MP
-    int panels[NET_MAX_PLAYERS];
-    int num_panels = 0;
+    // Build ordered player list from active slots
+    int all_players[NET_MAX_PLAYERS];
+    int total_players = 0;
     for (int s = 0; s < NET_MAX_PLAYERS; s++) {
         if (net_slot_active(net, s))
-            panels[num_panels++] = s;
-    }
-    if (num_panels == 2) {
-        int tmp = panels[0]; panels[0] = panels[1]; panels[1] = tmp;
+            all_players[total_players++] = s;
     }
 
-    while (!all_ready) {
-        // Render shop UI for all panels, same as local multiplayer
-        {
-            int sel_arr[NET_MAX_PLAYERS];
-            for (int i = 0; i < num_panels; i++)
-                sel_arr[i] = cursors[panels[i]];
-            render_shop_ui(app, ctx, sel_arr, panels, num_panels);
-        }
-        context_present(ctx);
+    // Process shop in batches of 2, like local multiplayer
+    for (int batch_start = 0; batch_start < total_players; batch_start += 2) {
+        int batch[2];
+        int num_batch = 0;
+        for (int i = batch_start; i < total_players && i < batch_start + 2; i++)
+            batch[num_batch++] = all_players[i];
+        // Swap so lower-index player is on right panel (matching local MP layout)
+        if (num_batch == 2) { int tmp = batch[0]; batch[0] = batch[1]; batch[1] = tmp; }
 
-        // All netgame players use player 0 (local) controls
-        SDL_Event e;
-        while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_QUIT) { return false; }
-            if (ready_local) continue;
-            ActionType act = input_map_event(&e, 0, &app->input_config);
-            if (act == ACT_MAX_PLAYER) continue;
-            int prev_cursor = cursors[local];
-            switch (act) {
-                case ACT_UP:    if (cursors[local] >= 4) cursors[local] -= 4; break;
-                case ACT_DOWN:  if (cursors[local] + 4 <= EQUIP_TOTAL) cursors[local] += 4; else cursors[local] = EQUIP_TOTAL; break;
-                case ACT_LEFT:  cursors[local] = (cursors[local] + EQUIP_TOTAL) % (EQUIP_TOTAL + 1); break;
-                case ACT_RIGHT: cursors[local] = (cursors[local] + 1) % (EQUIP_TOTAL + 1); break;
-                case ACT_ACTION:
-                    if (cursors[local] == EQUIP_TOTAL) {
-                        ready_local = true;
-                        if (net->is_server) {
-                            shop_ready[local] = true;
-                            if (net_all_players_check(net, shop_ready)) {
+        // Is local player in this batch?
+        bool local_in_batch = false;
+        for (int i = 0; i < num_batch; i++)
+            if (batch[i] == local) local_in_batch = true;
+
+        bool batch_done = false;
+        bool ready_local = false;
+        bool batch_ready[NET_MAX_PLAYERS] = {false};
+
+        while (!batch_done) {
+            // Render: show this batch's panels if local is in batch, otherwise waiting screen
+            if (local_in_batch) {
+                int sel_arr[2];
+                for (int i = 0; i < num_batch; i++)
+                    sel_arr[i] = cursors[batch[i]];
+                render_shop_ui(app, ctx, sel_arr, batch, num_batch);
+            } else {
+                SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+                SDL_RenderCopy(ctx->renderer, app->shop.texture, NULL, NULL);
+                SDL_Color gray = {128, 128, 128, 255};
+                char wait_msg[64];
+                snprintf(wait_msg, sizeof(wait_msg), "WAITING FOR PLAYERS %d-%d",
+                         all_players[batch_start] + 1,
+                         all_players[batch_start + num_batch - 1] + 1);
+                render_text(ctx->renderer, &app->font, 180, 230, gray, wait_msg);
+                SDL_SetRenderTarget(ctx->renderer, NULL);
+            }
+            context_present(ctx);
+
+            // Input: only process if local player is in this batch and not yet ready
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) {
+                if (e.type == SDL_QUIT) { return 0; }
+                if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F10) {
+                    NetMessage quit_msg = {0};
+                    quit_msg.type = NET_MSG_SHOP_ALL_READY;
+                    quit_msg.data.shop_all_ready.next_round = -1;
+                    if (net->is_server) net_broadcast(net, &quit_msg);
+                    else net_send_to(net->server_peer, &quit_msg);
+                    net_flush(net);
+                    return -1;
+                }
+                if (!local_in_batch || ready_local) continue;
+                ActionType act = input_map_event(&e, 0, &app->input_config);
+                if (act == ACT_MAX_PLAYER) continue;
+                int prev_cursor = cursors[local];
+                switch (act) {
+                    case ACT_UP:    if (cursors[local] >= 4) cursors[local] -= 4; break;
+                    case ACT_DOWN:  if (cursors[local] + 4 <= EQUIP_TOTAL) cursors[local] += 4; else cursors[local] = EQUIP_TOTAL; break;
+                    case ACT_LEFT:  cursors[local] = (cursors[local] + EQUIP_TOTAL) % (EQUIP_TOTAL + 1); break;
+                    case ACT_RIGHT: cursors[local] = (cursors[local] + 1) % (EQUIP_TOTAL + 1); break;
+                    case ACT_ACTION:
+                        if (cursors[local] == EQUIP_TOTAL) {
+                            ready_local = true;
+                            if (net->is_server) {
+                                batch_ready[local] = true;
+                            } else {
                                 NetMessage msg = {0};
-                                msg.type = NET_MSG_SHOP_ALL_READY;
-                                msg.data.shop_all_ready.next_round = app->current_round;
-                                net_broadcast(net, &msg);
-                                all_ready = true;
+                                msg.type = NET_MSG_SHOP_READY;
+                                msg.data.shop_ready.player_index = local;
+                                net_send_to(net->server_peer, &msg);
                             }
                         } else {
-                            NetMessage msg = {0};
-                            msg.type = NET_MSG_SHOP_READY;
-                            msg.data.shop_ready.player_index = local;
-                            net_send_to(net->server_peer, &msg);
+                            if (net->is_server) {
+                                if (shop_try_buy(app, local, cursors[local]))
+                                    net_broadcast_shop_state(app, net, local, cursors[local]);
+                            } else {
+                                NetMessage msg = {0};
+                                msg.type = NET_MSG_SHOP_ACTION;
+                                msg.data.shop_action.player_index = local;
+                                msg.data.shop_action.action = SHOP_ACT_BUY;
+                                msg.data.shop_action.item_index = cursors[local];
+                                net_send_to(net->server_peer, &msg);
+                            }
                         }
-                    } else {
-                        if (net->is_server) {
-                            if (shop_try_buy(app, local, cursors[local]))
-                                net_broadcast_shop_state(app, net, local, cursors[local]);
-                        } else {
-                            NetMessage msg = {0};
-                            msg.type = NET_MSG_SHOP_ACTION;
-                            msg.data.shop_action.player_index = local;
-                            msg.data.shop_action.action = SHOP_ACT_BUY;
-                            msg.data.shop_action.item_index = cursors[local];
-                            net_send_to(net->server_peer, &msg);
+                        break;
+                    case ACT_STOP:
+                        if (cursors[local] != EQUIP_TOTAL) {
+                            if (net->is_server) {
+                                if (shop_try_sell(app, local, cursors[local]))
+                                    net_broadcast_shop_state(app, net, local, cursors[local]);
+                            } else {
+                                NetMessage msg = {0};
+                                msg.type = NET_MSG_SHOP_ACTION;
+                                msg.data.shop_action.player_index = local;
+                                msg.data.shop_action.action = SHOP_ACT_SELL;
+                                msg.data.shop_action.item_index = cursors[local];
+                                net_send_to(net->server_peer, &msg);
+                            }
                         }
-                    }
-                    break;
-                case ACT_STOP:
-                    if (cursors[local] != EQUIP_TOTAL) {
-                        if (net->is_server) {
-                            if (shop_try_sell(app, local, cursors[local]))
-                                net_broadcast_shop_state(app, net, local, cursors[local]);
-                        } else {
-                            NetMessage msg = {0};
-                            msg.type = NET_MSG_SHOP_ACTION;
-                            msg.data.shop_action.player_index = local;
-                            msg.data.shop_action.action = SHOP_ACT_SELL;
-                            msg.data.shop_action.item_index = cursors[local];
-                            net_send_to(net->server_peer, &msg);
-                        }
-                    }
-                    break;
-                default: break;
+                        break;
+                    default: break;
+                }
+                if (cursors[local] != prev_cursor)
+                    net_send_cursor(app, net, cursors[local]);
             }
-            if (cursors[local] != prev_cursor)
-                net_send_cursor(app, net, cursors[local]);
-        }
 
-        // Poll network
-        NetMessage net_msg;
-        ENetPeer* from;
-        while (net_poll(net, &net_msg, &from) > 0) {
-            switch (net_msg.type) {
-                case NET_MSG_SHOP_ACTION:
-                    if (net->is_server) {
-                        int pi = net_msg.data.shop_action.player_index;
+            // Server: check if all batch players are ready
+            if (net->is_server) {
+                bool all_batch_ready = true;
+                for (int i = 0; i < num_batch; i++)
+                    if (!batch_ready[batch[i]]) { all_batch_ready = false; break; }
+                if (all_batch_ready) {
+                    NetMessage msg = {0};
+                    msg.type = NET_MSG_SHOP_ALL_READY;
+                    msg.data.shop_all_ready.next_round = batch_start; // batch index
+                    net_broadcast(net, &msg);
+                    net_flush(net);
+                    batch_done = true;
+                }
+            }
+
+            // Poll network
+            NetMessage net_msg;
+            ENetPeer* from;
+            while (net_poll(net, &net_msg, &from) > 0) {
+                switch (net_msg.type) {
+                    case NET_MSG_SHOP_ACTION:
+                        if (net->is_server) {
+                            int pi = net_msg.data.shop_action.player_index;
+                            if (pi >= 0 && pi < NET_MAX_PLAYERS) {
+                                if (net_msg.data.shop_action.action == SHOP_ACT_BUY)
+                                    shop_try_buy(app, pi, net_msg.data.shop_action.item_index);
+                                else
+                                    shop_try_sell(app, pi, net_msg.data.shop_action.item_index);
+                                net_broadcast_shop_state(app, net, pi, net_msg.data.shop_action.item_index);
+                            }
+                        }
+                        break;
+                    case NET_MSG_SHOP_STATE: {
+                        int pi = net_msg.data.shop_state.player_index;
                         if (pi >= 0 && pi < NET_MAX_PLAYERS) {
-                            if (net_msg.data.shop_action.action == SHOP_ACT_BUY)
-                                shop_try_buy(app, pi, net_msg.data.shop_action.item_index);
-                            else
-                                shop_try_sell(app, pi, net_msg.data.shop_action.item_index);
-                            net_broadcast_shop_state(app, net, pi, net_msg.data.shop_action.item_index);
+                            app->player_cash[pi] = net_msg.data.shop_state.cash;
+                            memcpy(app->player_inventory[pi], net_msg.data.shop_state.inventory, sizeof(app->player_inventory[pi]));
+                            cursors[pi] = net_msg.data.shop_state.cursor;
                         }
+                        break;
                     }
-                    break;
-                case NET_MSG_SHOP_STATE: {
-                    int pi = net_msg.data.shop_state.player_index;
-                    if (pi >= 0 && pi < NET_MAX_PLAYERS) {
-                        app->player_cash[pi] = net_msg.data.shop_state.cash;
-                        memcpy(app->player_inventory[pi], net_msg.data.shop_state.inventory, sizeof(app->player_inventory[pi]));
-                        cursors[pi] = net_msg.data.shop_state.cursor;
+                    case NET_MSG_SHOP_CURSOR: {
+                        int pi = net_msg.data.shop_cursor.player_index;
+                        if (pi >= 0 && pi < NET_MAX_PLAYERS)
+                            cursors[pi] = net_msg.data.shop_cursor.cursor;
+                        if (net->is_server)
+                            net_broadcast(net, &net_msg);
+                        break;
                     }
-                    break;
-                }
-                case NET_MSG_SHOP_CURSOR: {
-                    int pi = net_msg.data.shop_cursor.player_index;
-                    if (pi >= 0 && pi < NET_MAX_PLAYERS)
-                        cursors[pi] = net_msg.data.shop_cursor.cursor;
-                    if (net->is_server) {
-                        // Re-broadcast cursor to other clients
-                        net_broadcast(net, &net_msg);
-                    }
-                    break;
-                }
-                case NET_MSG_SHOP_READY:
-                    if (net->is_server) {
-                        int pi = net_msg.data.shop_ready.player_index;
-                        if (pi >= 0 && pi < NET_MAX_PLAYERS) shop_ready[pi] = true;
-                        if (net_all_players_check(net, shop_ready)) {
-                            NetMessage arm = {0};
-                            arm.type = NET_MSG_SHOP_ALL_READY;
-                            arm.data.shop_all_ready.next_round = app->current_round;
-                            net_broadcast(net, &arm);
-                            all_ready = true;
+                    case NET_MSG_SHOP_READY:
+                        if (net->is_server) {
+                            int pi = net_msg.data.shop_ready.player_index;
+                            if (pi >= 0 && pi < NET_MAX_PLAYERS)
+                                batch_ready[pi] = true;
                         }
-                    }
-                    break;
-                case NET_MSG_SHOP_ALL_READY:
-                    all_ready = true;
-                    break;
-                case NET_MSG_PLAYER_LEAVE:
-                    return false; // peer disconnected, abort netgame
-                default:
-                    break;
+                        break;
+                    case NET_MSG_SHOP_ALL_READY:
+                        if (net_msg.data.shop_all_ready.next_round == -1) {
+                            if (net->is_server) net_broadcast(net, &net_msg);
+                            return -1;
+                        }
+                        batch_done = true;
+                        break;
+                    case NET_MSG_PLAYER_LEAVE:
+                        return 0;
+                    default:
+                        break;
+                }
             }
-        }
 
-        SDL_Delay(16);
+            SDL_Delay(16);
+        }
     }
-    return true;
+    return 1;
 }
 
 static void app_run_netgame(App* app, ApplicationContext* ctx) {
@@ -1670,6 +1705,40 @@ static void app_run_netgame(App* app, ApplicationContext* ctx) {
                             ru.type = NET_MSG_READY_UPDATE;
                             memcpy(ru.data.ready_update.ready, net->player_ready, sizeof(ru.data.ready_update.ready));
                             net_broadcast(net, &ru);
+                            // Check if all ready
+                            if (net->player_count >= 2 && net_all_players_check(net, net->player_ready)) {
+                                app->options.players = (uint8_t)net->player_count;
+                                if (app->selected_level_count == 0 && app->level_count > 0) {
+                                    int count = app->options.rounds;
+                                    if (count > 128) count = 128;
+                                    int pool[128];
+                                    for (int i = 0; i < app->level_count; i++) pool[i] = i;
+                                    int filled = 0;
+                                    while (filled < count) {
+                                        for (int i = app->level_count - 1; i > 0; i--) {
+                                            int j = rand() % (i + 1);
+                                            int tmp = pool[i]; pool[i] = pool[j]; pool[j] = tmp;
+                                        }
+                                        int take = count - filled;
+                                        if (take > app->level_count) take = app->level_count;
+                                        for (int i = 0; i < take; i++)
+                                            app->selected_levels[filled++] = pool[i] + 1;
+                                    }
+                                    app->selected_level_count = count;
+                                }
+                                NetMessage gs = {0};
+                                gs.type = NET_MSG_GAME_START;
+                                pack_options_to_game_start(&app->options, &gs.data.game_start);
+                                gs.data.game_start.level_count = app->selected_level_count;
+                                gs.data.game_start.rng_seed = (uint32_t)SDL_GetTicks() ^ 0xDEADBEEF;
+                                if (app->selected_level_count > 0)
+                                    memcpy(gs.data.game_start.selected_levels, app->selected_levels,
+                                           app->selected_level_count * sizeof(int));
+                                net_broadcast(net, &gs);
+                                game_seed_rng(gs.data.game_start.rng_seed);
+                                game_started = true;
+                                in_lobby = false;
+                            }
                         }
                     }
                     break;
@@ -1716,11 +1785,14 @@ static void app_run_netgame(App* app, ApplicationContext* ctx) {
     }
 
     // Run net shop + gameplay rounds
-    bool aborted = false;
-    for (int round = 0; round < app->options.rounds && !aborted; round++) {
+    bool disconnected = false;
+    bool show_victory = true;
+    for (int round = 0; round < app->options.rounds && !disconnected; round++) {
         app->current_round = round;
-        if (!app_run_net_shop(app, ctx)) { aborted = true; break; }
-        if (!net->connected) { aborted = true; break; }
+        int shop_result = app_run_net_shop(app, ctx);
+        if (shop_result == 0) { disconnected = true; break; }   // disconnect
+        if (shop_result == -1) break;                            // F10 quit — show victory
+        if (!net->connected) { disconnected = true; break; }
 
         // Determine level
         if (app->level_count > 0) {
@@ -1751,12 +1823,13 @@ static void app_run_netgame(App* app, ApplicationContext* ctx) {
             context_animate(ctx, ANIMATION_FADE_DOWN, 7);
             context_linger_music_end(ctx);
 
-            if (result.end_type == ROUND_END_FINAL) { aborted = true; break; }
+            if (result.end_type == ROUND_END_FINAL) break;  // F10 during game — show victory
+            if (!net->connected) { disconnected = true; break; }
         }
     }
 
-    // Victory screen (unless aborted by disconnect)
-    if (!aborted) {
+    // Victory screen (unless disconnected)
+    if (!disconnected && show_victory) {
         context_stop_music(ctx);
         app_run_victory_screen(app, ctx);
     }

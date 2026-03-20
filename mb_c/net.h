@@ -181,6 +181,7 @@ int net_poll(NetContext* ctx, NetMessage* out_msg, ENetPeer** out_peer);
 void net_send_to(ENetPeer* peer, const NetMessage* msg);
 void net_broadcast(NetContext* ctx, const NetMessage* msg);
 
+void net_flush(NetContext* ctx);
 bool net_slot_active(const NetContext* ctx, int slot);
 
 #else /* MB_NET not defined */
