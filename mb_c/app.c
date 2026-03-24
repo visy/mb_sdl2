@@ -42,7 +42,7 @@ static void options_load(GameOptions* o, const char* game_dir) {
     if (o->rounds > 55) o->rounds = 55;
     if (o->treasures > 75) o->treasures = 75;
     if (o->cash > 2650) o->cash = 2650;
-    if (o->speed > 33) o->speed = 33;
+    if (o->speed > 99) o->speed = 99;
 }
 
 static void options_save(const GameOptions* o, const char* game_dir) {
@@ -71,6 +71,118 @@ static void options_save(const GameOptions* o, const char* game_dir) {
     if (!f) return;
     fwrite(buf, 1, 17, f);
     fclose(f);
+}
+
+// ==================== Player Roster (PLAYERS.DAT) ====================
+
+static void roster_load(PlayerRoster* roster, const char* game_dir) {
+    memset(roster, 0, sizeof(PlayerRoster));
+    for (int i = 0; i < MAX_PLAYERS; i++) roster->identities[i] = -1;
+
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s%cPLAYERS.DAT", game_dir, PATH_SEP);
+    FILE* f = fopen(path, "rb");
+    if (!f) return;
+    uint8_t data[ROSTER_MAX * ROSTER_RECORD_SIZE];
+    size_t n = fread(data, 1, sizeof(data), f);
+    fclose(f);
+    if (n != sizeof(data)) return;
+
+    for (int i = 0; i < ROSTER_MAX; i++) {
+        const uint8_t* rec = &data[i * ROSTER_RECORD_SIZE];
+        if (rec[0] != 0) continue; // non-zero = empty
+        roster->entries[i].active = true;
+        int len = rec[1]; if (len > 24) len = 24;
+        memcpy(roster->entries[i].name, &rec[2], len);
+        roster->entries[i].name[len] = '\0';
+        const uint8_t* s = &rec[26];
+        roster->entries[i].tournaments        = s[0]  | (s[1]<<8)  | (s[2]<<16)  | (s[3]<<24);
+        roster->entries[i].tournaments_wins   = s[4]  | (s[5]<<8)  | (s[6]<<16)  | (s[7]<<24);
+        roster->entries[i].rounds             = s[8]  | (s[9]<<8)  | (s[10]<<16) | (s[11]<<24);
+        roster->entries[i].rounds_wins        = s[12] | (s[13]<<8) | (s[14]<<16) | (s[15]<<24);
+        roster->entries[i].treasures_collected= s[16] | (s[17]<<8) | (s[18]<<16) | (s[19]<<24);
+        roster->entries[i].total_money        = s[20] | (s[21]<<8) | (s[22]<<16) | (s[23]<<24);
+        roster->entries[i].bombs_bought       = s[24] | (s[25]<<8) | (s[26]<<16) | (s[27]<<24);
+        roster->entries[i].bombs_dropped      = s[28] | (s[29]<<8) | (s[30]<<16) | (s[31]<<24);
+        roster->entries[i].deaths             = s[32] | (s[33]<<8) | (s[34]<<16) | (s[35]<<24);
+        roster->entries[i].meters_ran         = s[36] | (s[37]<<8) | (s[38]<<16) | (s[39]<<24);
+        memcpy(roster->entries[i].history, &rec[66], ROSTER_HISTORY_SIZE);
+    }
+}
+
+static void roster_save(const PlayerRoster* roster, const char* game_dir) {
+    uint8_t data[ROSTER_MAX * ROSTER_RECORD_SIZE];
+    memset(data, 0, sizeof(data));
+    for (int i = 0; i < ROSTER_MAX; i++) {
+        uint8_t* rec = &data[i * ROSTER_RECORD_SIZE];
+        if (!roster->entries[i].active) { rec[0] = 1; continue; }
+        rec[0] = 0;
+        int len = (int)strlen(roster->entries[i].name); if (len > 24) len = 24;
+        rec[1] = (uint8_t)len;
+        memcpy(&rec[2], roster->entries[i].name, len);
+        uint8_t* s = &rec[26];
+        const RosterInfo* e = &roster->entries[i];
+        uint32_t vals[] = { e->tournaments, e->tournaments_wins, e->rounds, e->rounds_wins,
+                            e->treasures_collected, e->total_money, e->bombs_bought,
+                            e->bombs_dropped, e->deaths, e->meters_ran };
+        for (int v = 0; v < 10; v++) {
+            s[v*4+0] = vals[v] & 0xFF;
+            s[v*4+1] = (vals[v] >> 8) & 0xFF;
+            s[v*4+2] = (vals[v] >> 16) & 0xFF;
+            s[v*4+3] = (vals[v] >> 24) & 0xFF;
+        }
+        memcpy(&rec[66], e->history, ROSTER_HISTORY_SIZE);
+    }
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s%cPLAYERS.DAT", game_dir, PATH_SEP);
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(data, 1, sizeof(data), f);
+    fclose(f);
+}
+
+static void identities_load(PlayerRoster* roster, const char* game_dir) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s%cIDENTIFY.DAT", game_dir, PATH_SEP);
+    FILE* f = fopen(path, "rb");
+    if (!f) return;
+    uint8_t buf[4];
+    if (fread(buf, 1, 4, f) == 4) {
+        for (int i = 0; i < MAX_PLAYERS; i++)
+            roster->identities[i] = buf[i] == 0 ? -1 : (int8_t)(buf[i] - 1);
+    }
+    fclose(f);
+}
+
+static void identities_save(const PlayerRoster* roster, const char* game_dir) {
+    uint8_t buf[4];
+    for (int i = 0; i < MAX_PLAYERS; i++)
+        buf[i] = roster->identities[i] < 0 ? 0 : (uint8_t)(roster->identities[i] + 1);
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s%cIDENTIFY.DAT", game_dir, PATH_SEP);
+    FILE* f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(buf, 1, 4, f);
+    fclose(f);
+}
+
+static void roster_update_stats(RosterInfo* dest, const GameStats* src, bool tournament_win) {
+    if (src->rounds == 0) return;
+    uint32_t hlen = ROSTER_HISTORY_SIZE;
+    uint32_t hist_idx = dest->tournaments % hlen;
+    uint32_t last_idx = (dest->tournaments + hlen - 1) % hlen;
+    uint8_t hval = dest->history[last_idx] / 2 + (uint8_t)((129 * src->rounds_wins / src->rounds) / 2);
+    dest->tournaments += 1;
+    dest->tournaments_wins += tournament_win ? 1 : 0;
+    dest->rounds += src->rounds;
+    dest->rounds_wins += src->rounds_wins;
+    dest->treasures_collected += src->treasures_collected;
+    dest->total_money += src->total_money;
+    dest->bombs_bought += src->bombs_bought;
+    dest->bombs_dropped += src->bombs_dropped;
+    dest->deaths += src->deaths;
+    dest->meters_ran += src->meters_ran;
+    dest->history[hist_idx] = hval;
 }
 
 typedef enum {
@@ -138,6 +250,7 @@ bool app_init(App* app, ApplicationContext* ctx) {
     context_load_spy(ctx, "GAMEOVER.SPY", &app->game_over);
     context_load_spy(ctx, "CONGRATU.SPY", &app->congratu);
     context_load_spy(ctx, "HALLOFFA.SPY", &app->halloffa);
+    context_load_spy(ctx, "IDENTIFW.SPY", &app->select_players);
 
     // Player avatars (PPM format)
     static const char* avatar_win_files[] = {"SINVOIT.PPM", "PUNVOIT.PPM", "VIHVOIT.PPM", "KELVOIT.PPM"};
@@ -193,6 +306,8 @@ bool app_init(App* app, ApplicationContext* ctx) {
     app->options.win_by_money = true;
 
     options_load(&app->options, ctx->game_dir);
+    roster_load(&app->roster, ctx->game_dir);
+    identities_load(&app->roster, ctx->game_dir);
 
     DIR* d = opendir(ctx->game_dir);
     if (d) {
@@ -444,7 +559,7 @@ static void opt_value_minus(GameOptions* o, OptionItem item) {
         case OPT_ROUNDS: if (o->rounds > 1) o->rounds--; break;
         case OPT_TIME: o->round_time_secs = (o->round_time_secs >= 15) ? o->round_time_secs - 15 : 0; break;
         case OPT_PLAYERS: if (o->players > 1) o->players--; break;
-        case OPT_SPEED: if (o->speed < 33) o->speed++; break;
+        case OPT_SPEED: if (o->speed < 99) o->speed++; break;
         case OPT_BOMB_DAMAGE: if (o->bomb_damage > 0) o->bomb_damage--; break;
         case OPT_DARKNESS: o->darkness = !o->darkness; break;
         case OPT_FREE_MARKET: o->free_market = !o->free_market; break;
@@ -488,7 +603,7 @@ static void render_option_value(App* app, ApplicationContext* ctx, GameOptions* 
             case OPT_ROUNDS: bar_w = (int)((uint32_t)o->rounds * 165 / 55); break;
             case OPT_TIME: bar_w = (int)((uint32_t)o->round_time_secs * 165 / 1359); break;
             case OPT_PLAYERS: bar_w = (o->players - 1) * 55; break;
-            case OPT_SPEED: bar_w = (100 - 3 * o->speed) * 165 / 100; break;
+            case OPT_SPEED: bar_w = (100 - o->speed) * 165 / 100; break;
             case OPT_BOMB_DAMAGE: bar_w = (int)((uint32_t)o->bomb_damage * 165 / 100); break;
             default: break;
         }
@@ -504,7 +619,7 @@ static void render_option_value(App* app, ApplicationContext* ctx, GameOptions* 
             case OPT_ROUNDS: snprintf(text, sizeof(text), "%u", o->rounds); break;
             case OPT_TIME: snprintf(text, sizeof(text), "%u:%02u min", o->round_time_secs / 60, o->round_time_secs % 60); break;
             case OPT_PLAYERS: snprintf(text, sizeof(text), " %u", o->players); break;
-            case OPT_SPEED: snprintf(text, sizeof(text), " %d%%", 100 - 3 * o->speed); break;
+            case OPT_SPEED: snprintf(text, sizeof(text), " %d%%", 100 - o->speed); break;
             case OPT_BOMB_DAMAGE: snprintf(text, sizeof(text), " %u%%", o->bomb_damage); break;
             default: break;
         }
@@ -1028,8 +1143,413 @@ static void app_run_campaign_end(App* app, ApplicationContext* ctx, bool win) {
     }
 }
 
+// ==================== Player Selection Screen ====================
+
+#define PS_RIGHT_X 376
+#define PS_RIGHT_Y 22
+#define PS_LEFT_X 44
+#define PS_LEFT_Y 35
+
+static void ps_render_right_pane(App* app, ApplicationContext* ctx) {
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+    SDL_Rect r = {PS_RIGHT_X + 2, PS_RIGHT_Y + 1, 198, 256};
+    SDL_RenderFillRect(ctx->renderer, &r);
+    SDL_Color white = app->select_players.palette[1];
+    SDL_Color gray = app->select_players.palette[3];
+    for (int i = 0; i < ROSTER_MAX; i++) {
+        int x = PS_RIGHT_X + 2, y = PS_RIGHT_Y + i * 8 + 1;
+        if (app->roster.entries[i].active)
+            render_text(ctx->renderer, &app->font, x, y, white, app->roster.entries[i].name);
+        else
+            render_text(ctx->renderer, &app->font, x, y, gray, "-");
+    }
+    SDL_SetRenderTarget(ctx->renderer, NULL);
+}
+
+static void ps_render_stats(App* app, ApplicationContext* ctx, const RosterInfo* stats) {
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    SDL_Color white = app->select_players.palette[1];
+    SDL_Color red = app->select_players.palette[3];
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+    // Clear stat areas
+    for (int row = 0; row < 6; row++)
+        for (int col = 0; col < 2; col++) {
+            SDL_Rect r = {col * 146 + 64, row * 24 + 328, 95, 10};
+            SDL_RenderFillRect(ctx->renderer, &r);
+        }
+    // Clear history area
+    SDL_Rect hr = {367, 328, 198, 130};
+    SDL_RenderFillRect(ctx->renderer, &hr);
+
+    if (!stats) { SDL_SetRenderTarget(ctx->renderer, NULL); return; }
+
+    char buf[32];
+    // Tournaments
+    snprintf(buf, sizeof(buf), "%u", stats->tournaments);
+    render_text(ctx->renderer, &app->font, 65, 330, white, buf);
+    snprintf(buf, sizeof(buf), "%u", stats->tournaments_wins);
+    render_text(ctx->renderer, &app->font, 65, 354, white, buf);
+    if (stats->tournaments > 0) {
+        int w = 1 + (94 * stats->tournaments_wins) / stats->tournaments;
+        SDL_SetRenderDrawColor(ctx->renderer, white.r, white.g, white.b, 255);
+        SDL_Rect bar = {64, 376, w, 10};
+        SDL_RenderFillRect(ctx->renderer, &bar);
+        snprintf(buf, sizeof(buf), "%u%%", (200 * stats->tournaments_wins + stats->tournaments) / stats->tournaments / 2);
+        render_text(ctx->renderer, &app->font, 65, 378, red, buf);
+    }
+    // Rounds
+    snprintf(buf, sizeof(buf), "%u", stats->rounds);
+    render_text(ctx->renderer, &app->font, 65, 402, white, buf);
+    snprintf(buf, sizeof(buf), "%u", stats->rounds_wins);
+    render_text(ctx->renderer, &app->font, 65, 426, white, buf);
+    if (stats->rounds > 0) {
+        int w = 1 + (94 * stats->rounds_wins) / stats->rounds;
+        SDL_SetRenderDrawColor(ctx->renderer, white.r, white.g, white.b, 255);
+        SDL_Rect bar = {64, 448, w, 10};
+        SDL_RenderFillRect(ctx->renderer, &bar);
+        snprintf(buf, sizeof(buf), "%u%%", (200 * stats->rounds_wins + stats->rounds) / stats->rounds / 2);
+        render_text(ctx->renderer, &app->font, 65, 450, red, buf);
+    }
+    // Right column stats
+    snprintf(buf, sizeof(buf), "%u", stats->treasures_collected);
+    render_text(ctx->renderer, &app->font, 211, 330, white, buf);
+    snprintf(buf, sizeof(buf), "%u", stats->total_money);
+    render_text(ctx->renderer, &app->font, 211, 354, white, buf);
+    snprintf(buf, sizeof(buf), "%u", stats->bombs_bought);
+    render_text(ctx->renderer, &app->font, 211, 378, white, buf);
+    snprintf(buf, sizeof(buf), "%u", stats->bombs_dropped);
+    render_text(ctx->renderer, &app->font, 211, 402, white, buf);
+    snprintf(buf, sizeof(buf), "%u", stats->deaths);
+    render_text(ctx->renderer, &app->font, 211, 426, white, buf);
+    snprintf(buf, sizeof(buf), "%u", stats->meters_ran);
+    render_text(ctx->renderer, &app->font, 211, 450, white, buf);
+
+    // History graph
+    uint32_t offset = stats->tournaments % ROSTER_HISTORY_SIZE;
+    int last_x = 367;
+    int last_y = 457 - (int)stats->history[offset];
+    SDL_Color* pal = app->select_players.palette;
+    for (int i = 1; i < ROSTER_HISTORY_SIZE; i++) {
+        offset = (offset + 1) % ROSTER_HISTORY_SIZE;
+        uint8_t val = stats->history[offset];
+        int y = 457 - (int)val;
+        int ci = ((uint16_t)val * 4 + 67) / 134;
+        SDL_Color c;
+        if (ci == 0) c = pal[3];
+        else if (ci == 1) c = pal[7];
+        else if (ci == 2) c = pal[6];
+        else if (ci == 3) c = pal[5];
+        else c = pal[4];
+        SDL_SetRenderDrawColor(ctx->renderer, c.r, c.g, c.b, 255);
+        SDL_RenderDrawLine(ctx->renderer, last_x, last_y, last_x + 5, y);
+        SDL_RenderDrawLine(ctx->renderer, last_x + 5, y, last_x + 6, y);
+        last_x += 6;
+        last_y = y;
+    }
+    SDL_SetRenderTarget(ctx->renderer, NULL);
+}
+
+static void ps_render_left_names(App* app, ApplicationContext* ctx, int num_players) {
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    SDL_Color color = app->select_players.palette[1];
+    for (int p = 0; p < 4; p++) {
+        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+        SDL_Rect r = {119, p * 53 + 40, 26 * 8, 10};
+        SDL_RenderFillRect(ctx->renderer, &r);
+        if (p < num_players) {
+            int8_t ri = app->roster.identities[p];
+            if (ri >= 0 && app->roster.entries[ri].active)
+                render_text(ctx->renderer, &app->font, 120, p * 53 + 41, color, app->roster.entries[ri].name);
+        }
+    }
+    SDL_SetRenderTarget(ctx->renderer, NULL);
+}
+
+static void ps_render_shovel(App* app, ApplicationContext* ctx, int prev, int cur) {
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    if (prev != cur) {
+        int old_y = prev * 53 + PS_LEFT_Y;
+        int w, h; glyphs_dimensions(GLYPH_SHOVEL_POINTER, &w, &h);
+        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+        SDL_Rect r = {PS_LEFT_X, old_y, w, h};
+        SDL_RenderFillRect(ctx->renderer, &r);
+    }
+    int y = cur * 53 + PS_LEFT_Y;
+    glyphs_render(&app->glyphs, ctx->renderer, PS_LEFT_X, y, GLYPH_SHOVEL_POINTER);
+    SDL_SetRenderTarget(ctx->renderer, NULL);
+}
+
+static void ps_render_arrow(App* app, ApplicationContext* ctx, int pos) {
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    int y = pos * 8 + PS_RIGHT_Y;
+    glyphs_render(&app->glyphs, ctx->renderer, PS_RIGHT_X - 37, y, GLYPH_ARROW_POINTER);
+    SDL_SetRenderTarget(ctx->renderer, NULL);
+}
+
+static void ps_clear_arrow(App* app __attribute__((unused)), ApplicationContext* ctx, int pos) {
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    int y = pos * 8 + PS_RIGHT_Y;
+    int w, h; glyphs_dimensions(GLYPH_ARROW_POINTER, &w, &h);
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+    SDL_Rect r = {PS_RIGHT_X - 37, y, w, h};
+    SDL_RenderFillRect(ctx->renderer, &r);
+    SDL_SetRenderTarget(ctx->renderer, NULL);
+}
+
+// Edit/create a player name at roster index. Returns true if name was entered.
+static bool ps_edit_name(App* app, ApplicationContext* ctx, int roster_idx) {
+    int x = PS_RIGHT_X + 2;
+    int y = PS_RIGHT_Y + roster_idx * 8 + 1;
+    char name[ROSTER_NAME_MAX] = "";
+    int cursor = 0;
+
+    SDL_StartTextInput();
+    bool done = false;
+    while (!done) {
+        SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+        SDL_Rect r = {x, y, 193, 8};
+        SDL_RenderFillRect(ctx->renderer, &r);
+        render_text(ctx->renderer, &app->font, x, y, app->select_players.palette[1], name);
+        if (cursor < 24) {
+            SDL_SetRenderDrawColor(ctx->renderer, app->select_players.palette[8].r,
+                                   app->select_players.palette[8].g, app->select_players.palette[8].b, 255);
+            SDL_Rect cur_r = {x + 1 + 8 * cursor, y + 6, 8, 2};
+            SDL_RenderFillRect(ctx->renderer, &cur_r);
+        }
+        SDL_SetRenderTarget(ctx->renderer, NULL);
+        context_present(ctx);
+
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) { SDL_StopTextInput(); return false; }
+            if (e.type == SDL_KEYDOWN) {
+                if (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER
+                    || e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
+                    done = true; break;
+                }
+                if ((e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE || e.key.keysym.scancode == SDL_SCANCODE_DELETE) && cursor > 0) {
+                    name[--cursor] = '\0';
+                }
+            }
+            if (e.type == SDL_TEXTINPUT && cursor < 24) {
+                char ch = e.text.text[0];
+                if (ch >= 32 && ch < 127) {
+                    name[cursor++] = ch;
+                    name[cursor] = '\0';
+                }
+            }
+        }
+        SDL_Delay(16);
+    }
+    SDL_StopTextInput();
+
+    if (cursor > 0) {
+        RosterInfo* entry = &app->roster.entries[roster_idx];
+        memset(entry, 0, sizeof(RosterInfo));
+        entry->active = true;
+        snprintf(entry->name, ROSTER_NAME_MAX, "%s", name);
+    }
+    ps_render_right_pane(app, ctx);
+    return cursor > 0;
+}
+
+// Name select sub-menu: browse 32 roster slots, select or create
+// Returns roster index selected, or -1 if cancelled
+static int ps_name_select(App* app, ApplicationContext* ctx) {
+    int arrow = 0;
+    ps_render_arrow(app, ctx, arrow);
+    ps_render_stats(app, ctx, app->roster.entries[arrow].active ? &app->roster.entries[arrow] : NULL);
+    context_present(ctx);
+
+    int result = -1;
+    bool running = true;
+    while (running) {
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) { running = false; break; }
+            if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+                int prev = arrow;
+                switch (e.key.keysym.scancode) {
+                    case SDL_SCANCODE_DOWN: case SDL_SCANCODE_KP_2:
+                        arrow = (arrow + 1) % ROSTER_MAX; break;
+                    case SDL_SCANCODE_UP: case SDL_SCANCODE_KP_8:
+                        arrow = (arrow + ROSTER_MAX - 1) % ROSTER_MAX; break;
+                    case SDL_SCANCODE_LEFT: case SDL_SCANCODE_KP_4:
+                        if (app->roster.entries[arrow].active) result = arrow;
+                        running = false; break;
+                    case SDL_SCANCODE_ESCAPE: case SDL_SCANCODE_F10:
+                        running = false; break;
+                    case SDL_SCANCODE_BACKSPACE: case SDL_SCANCODE_DELETE:
+                        app->roster.entries[arrow].active = false;
+                        // Clear any identities pointing here
+                        for (int i = 0; i < MAX_PLAYERS; i++)
+                            if (app->roster.identities[i] == arrow) app->roster.identities[i] = -1;
+                        ps_render_right_pane(app, ctx);
+                        ps_render_stats(app, ctx, NULL);
+                        context_present(ctx);
+                        break;
+                    case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER:
+                        ps_edit_name(app, ctx, arrow);
+                        if (app->roster.entries[arrow].active) { result = arrow; running = false; }
+                        break;
+                    default: break;
+                }
+                if (prev != arrow && running) {
+                    ps_clear_arrow(app, ctx, prev);
+                    ps_render_arrow(app, ctx, arrow);
+                    ps_render_stats(app, ctx, app->roster.entries[arrow].active ? &app->roster.entries[arrow] : NULL);
+                    context_present(ctx);
+                }
+            }
+            if (e.type == SDL_TEXTINPUT) {
+                // Start editing new name
+                ps_edit_name(app, ctx, arrow);
+                if (app->roster.entries[arrow].active) { result = arrow; running = false; }
+            }
+        }
+        SDL_Delay(16);
+    }
+    ps_clear_arrow(app, ctx, arrow);
+    context_present(ctx);
+    return result;
+}
+
+// Main player selection screen. Returns true if all players selected, false if cancelled.
+static bool app_run_player_select(App* app, ApplicationContext* ctx) {
+    int num_players = app->options.players;
+    int active = 4; // 0-3 = player slots, 4 = "Play" button
+
+    if (!app->select_players.texture) return true; // no texture, skip
+
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    SDL_RenderCopy(ctx->renderer, app->select_players.texture, NULL, NULL);
+    // Erase unused player panels
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+    for (int p = num_players; p < 4; p++) {
+        SDL_Rect r = {39, p * 53 + 18, 293, 53};
+        SDL_RenderFillRect(ctx->renderer, &r);
+    }
+    SDL_SetRenderTarget(ctx->renderer, NULL);
+
+    ps_render_right_pane(app, ctx);
+    ps_render_left_names(app, ctx, num_players);
+    ps_render_shovel(app, ctx, active, active);
+    // Show stats for current active slot
+    {
+        const RosterInfo* st = NULL;
+        if (active < 4 && app->roster.identities[active] >= 0)
+            st = &app->roster.entries[app->roster.identities[active]];
+        ps_render_stats(app, ctx, st);
+    }
+    context_present(ctx);
+    context_animate(ctx, ANIMATION_FADE_UP, 7);
+
+    bool result = false;
+    bool running = true;
+    while (running) {
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) { running = false; break; }
+            if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+                int prev = active;
+                switch (e.key.keysym.scancode) {
+                    case SDL_SCANCODE_DOWN: case SDL_SCANCODE_KP_2:
+                        active++;
+                        if (active > 4) active = 0;
+                        else if (active != 4 && active >= num_players) active = 4;
+                        break;
+                    case SDL_SCANCODE_UP: case SDL_SCANCODE_KP_8:
+                        if (active == 0) active = 4;
+                        else { active--; if (active >= num_players) active = num_players - 1; }
+                        break;
+                    case SDL_SCANCODE_F10:
+                        running = false; break;
+                    case SDL_SCANCODE_ESCAPE:
+                        running = false; break;
+                    case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER:
+                    case SDL_SCANCODE_RIGHT: case SDL_SCANCODE_KP_6: {
+                        if (active == 4) {
+                            // Check all selected
+                            bool all_ok = true;
+                            for (int i = 0; i < num_players; i++)
+                                if (app->roster.identities[i] < 0) { all_ok = false; break; }
+                            if (all_ok) { result = true; running = false; }
+                        } else {
+                            int sel = ps_name_select(app, ctx);
+                            if (sel >= 0) app->roster.identities[active] = (int8_t)sel;
+                            ps_render_left_names(app, ctx, num_players);
+                        }
+                        break;
+                    }
+                    default: break;
+                }
+                if (prev != active) {
+                    ps_render_shovel(app, ctx, prev, active);
+                    const RosterInfo* st = NULL;
+                    if (active < 4 && app->roster.identities[active] >= 0)
+                        st = &app->roster.entries[app->roster.identities[active]];
+                    ps_render_stats(app, ctx, st);
+                }
+                context_present(ctx);
+            }
+            if (e.type == SDL_TEXTINPUT && active < 4) {
+                // Find empty slot and start editing
+                int empty = -1;
+                for (int i = 0; i < ROSTER_MAX; i++)
+                    if (!app->roster.entries[i].active) { empty = i; break; }
+                if (empty < 0) empty = ROSTER_MAX - 1;
+                ps_edit_name(app, ctx, empty);
+                if (app->roster.entries[empty].active)
+                    app->roster.identities[active] = (int8_t)empty;
+                ps_render_left_names(app, ctx, num_players);
+                context_present(ctx);
+            }
+        }
+        SDL_Delay(16);
+    }
+
+    // Copy selected names to player_name slots
+    for (int i = 0; i < num_players; i++) {
+        int8_t ri = app->roster.identities[i];
+        if (ri >= 0 && app->roster.entries[ri].active)
+            snprintf(app->player_name[i], sizeof(app->player_name[i]), "%s", app->roster.entries[ri].name);
+    }
+
+    // Save roster and identities
+    roster_save(&app->roster, ctx->game_dir);
+    identities_save(&app->roster, ctx->game_dir);
+
+    // Reset per-game stats
+    memset(app->game_stats, 0, sizeof(app->game_stats));
+
+    context_animate(ctx, ANIMATION_FADE_DOWN, 7);
+    return result;
+}
+
+static bool level_has_exit(const uint8_t* level_data) {
+    for (int y = 0; y < 45; y++)
+        for (int x = 0; x < 66; x++)
+            if (level_data[y * 66 + x] == TILE_EXIT) return true;
+    return false;
+}
+
+static void validate_campaign_levels(App* app) {
+    for (int i = 0; i < app->campaign_level_count; i++) {
+        if (!app->campaign_levels[i]) {
+            fprintf(stderr, "WARNING: Campaign level %d not loaded\n", i);
+            continue;
+        }
+        if (!level_has_exit(app->campaign_levels[i])) {
+            fprintf(stderr, "WARNING: Campaign level %d (LEVEL%d.MNL) has no exit tile\n", i, i);
+        }
+    }
+}
+
 static void app_run_campaign(App* app, ApplicationContext* ctx) {
     if (app->campaign_level_count == 0) return;
+    validate_campaign_levels(app);
 
     app->current_round = 0;
     app->player_lives = 3;
@@ -1091,10 +1611,10 @@ static void app_run_campaign(App* app, ApplicationContext* ctx) {
 
         if (result.end_type == ROUND_END_EXITED) {
             app->current_round++;
-        } else if (result.end_type == ROUND_END_FAILED) {
+        } else if (result.end_type == ROUND_END_FAILED || result.end_type == ROUND_END_NORMAL) {
             app->player_lives--;
             // Don't advance round - retry same level
-        } else if (result.end_type == ROUND_END_QUIT) {
+        } else if (result.end_type == ROUND_END_QUIT || result.end_type == ROUND_END_FINAL) {
             break;
         }
 
@@ -1879,6 +2399,7 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
         context_animate(ctx, ANIMATION_FADE_DOWN, 7);
         if (selected == MENU_QUIT) break;
         else if (selected == MENU_NEW_GAME) {
+            if (!app_run_player_select(app, ctx)) continue;
             if (app->options.players == 1) {
                 app_run_campaign(app, ctx);
             } else {

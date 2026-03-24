@@ -105,7 +105,7 @@ static bool is_bomb(uint8_t val) {
         || val == TILE_SMALL_CRUCIFIX_BOMB || val == TILE_LARGE_CRUCIFIX_BOMB
         || val == TILE_PLASTIC_BOMB || val == TILE_EXPLOSIVE_PLASTIC_BOMB
         || val == TILE_DIGGER_BOMB || val == TILE_NAPALM1 || val == TILE_NAPALM2
-        || val == TILE_JUMPING_BOMB || val == TILE_EXPLOSIVE_PLASTIC
+        || val == TILE_JUMPING_BOMB
         || val == TILE_SMALL_BOMB_EXTINGUISHED || val == TILE_BIG_BOMB_EXTINGUISHED
         || val == TILE_DYNAMITE_EXTINGUISHED || val == TILE_NAPALM_EXTINGUISHED;
 }
@@ -238,7 +238,7 @@ static void explode_cell_ex(World* world, int cx, int cy, int dmg, bool heavy) {
     apply_explosion_damage(world, cx, cy, dmg);
     uint8_t val = world->tiles[cy][cx];
 
-    if (is_bomb(val)) {
+    if (is_bomb(val) || val == TILE_EXPLOSIVE_PLASTIC) {
         // Immediately trigger the bomb (matching Rust's immediate dispatch)
         explode_bomb(world, cx, cy);
         return;
@@ -267,7 +267,7 @@ static void explode_cell_ex(World* world, int cx, int cy, int dmg, bool heavy) {
             world->tiles[cy][cx] = TILE_EXPLOSION;
             world->timer[cy][cx] = 3;
         }
-    } else if (val != TILE_WALL && val != TILE_DOOR && val != TILE_BUTTON_OFF && val != (TILE_BUTTON_OFF + 1)) {
+    } else if (val != TILE_WALL && val != TILE_DOOR && val != TILE_EXIT && val != TILE_BUTTON_OFF && val != (TILE_BUTTON_OFF + 1)) {
         world->tiles[cy][cx] = TILE_EXPLOSION;
         world->timer[cy][cx] = 3;
     }
@@ -497,7 +497,7 @@ static void finalize_explosive_plastic(World* world, int x, int y, void* userdat
     }
     world->tiles[y][x] = TILE_EXPLOSIVE_PLASTIC;
     world->hits[y][x] = 400;
-    world->timer[y][x] = 250;
+    world->timer[y][x] = 0;
 }
 
 static void finalize_digger(World* world, int x, int y, void* userdata) {
@@ -1477,7 +1477,7 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
         int show = lives < 3 ? 3 : lives;
         int lx = 160 * world->num_players;
         SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
-        SDL_Rect lives_bg = {lx, 2, 480, 28};
+        SDL_Rect lives_bg = {lx, 0, 640 - lx, 30};
         SDL_RenderFillRect(ctx->renderer, &lives_bg);
         for (int i = 0; i < show; i++) {
             GlyphType g = (i < lives) ? GLYPH_LIFE : GLYPH_LIFE_LOST;
@@ -1856,10 +1856,19 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
 
     canvas_init(app, ctx, &world);
 
+    // Frame timing: base tick = 20ms (50fps), speed scales it
+    // speed_pct 100 = normal, 50 = half speed, etc.
+    int speed_pct = 100 - (int)app->options.speed;
+    if (speed_pct < 1) speed_pct = 1;
+    // tick_ms = 20 at 100%, 40 at 50%, etc. Minimum 16ms (cap at ~60fps)
+    int tick_ms = 2000 / speed_pct;
+    if (tick_ms < 16) tick_ms = 16;
+
     bool running = true, quit_requested = false;
     explosion_app = app;
     (void)net; // may be unused when MB_NET is not defined
     while (running) {
+        Uint32 frame_start = SDL_GetTicks();
 #ifdef MB_NET
         if (net) {
             // === NETGAME: lockstep input ===
@@ -1878,9 +1887,7 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
                 else if (act == ACT_REMOTE) local_input |= NET_INPUT_REMOTE;
                 else if (act == ACT_GOD && (e.type == SDL_KEYDOWN || e.type == SDL_CONTROLLERBUTTONDOWN))
                     local_input |= NET_INPUT_GOD;
-                if (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_F10 || e.key.keysym.scancode == SDL_SCANCODE_ESCAPE))
-                    local_input |= NET_INPUT_QUIT;
-                if (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK)
+                if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F10)
                     local_input |= NET_INPUT_QUIT;
             }
 
@@ -2238,8 +2245,10 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
                                 world.timer[ny][nx] = clock;
                                 world.hits[ny][nx] = 400;
                             }
-                        } else if (t == TILE_BUTTON_OFF + 1) {
-                            // ButtonOn timer expired - stay as ButtonOn
+                        } else if (t == TILE_BUTTON_OFF || t == TILE_BUTTON_OFF + 1) {
+                            // Button cooldown expired - stay as is
+                        } else if (t == TILE_EXIT || t == TILE_DOOR) {
+                            // Permanent tiles - never convert to passage
                         } else {
                             world.tiles[y][x] = TILE_PASSAGE;
                             for (int pi = 0; pi < world.num_actors; pi++) {
@@ -2309,7 +2318,10 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
         }
 
         context_present(ctx);
-        SDL_Delay(20);
+        // Frame pacing: wait until tick_ms has elapsed
+        Uint32 frame_elapsed = SDL_GetTicks() - frame_start;
+        if ((int)frame_elapsed < tick_ms)
+            SDL_Delay((Uint32)(tick_ms - (int)frame_elapsed));
     }
 
     if (world.canvas) SDL_DestroyTexture(world.canvas);

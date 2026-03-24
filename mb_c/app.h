@@ -39,6 +39,43 @@ typedef enum {
 } Equipment;
 
 #define MAX_PLAYERS 4
+#define ROSTER_MAX 32
+#define ROSTER_NAME_MAX 25
+#define ROSTER_RECORD_SIZE 101
+#define ROSTER_HISTORY_SIZE 34
+
+typedef struct {
+    bool active;
+    char name[ROSTER_NAME_MAX];
+    uint32_t tournaments;
+    uint32_t tournaments_wins;
+    uint32_t rounds;
+    uint32_t rounds_wins;
+    uint32_t treasures_collected;
+    uint32_t total_money;
+    uint32_t bombs_bought;
+    uint32_t bombs_dropped;
+    uint32_t deaths;
+    uint32_t meters_ran;
+    uint8_t history[ROSTER_HISTORY_SIZE];
+} RosterInfo;
+
+typedef struct {
+    RosterInfo entries[ROSTER_MAX];
+    int8_t identities[MAX_PLAYERS]; // roster index per player slot, -1 = none
+} PlayerRoster;
+
+// Per-game stats accumulator (reset each tournament, merged at end)
+typedef struct {
+    uint32_t rounds;
+    uint32_t rounds_wins;
+    uint32_t treasures_collected;
+    uint32_t total_money;
+    uint32_t bombs_bought;
+    uint32_t bombs_dropped;
+    uint32_t deaths;
+    uint32_t meters_ran;
+} GameStats;
 
 typedef struct {
     uint16_t cash;
@@ -72,6 +109,7 @@ typedef struct {
     TexturePalette game_over;
     TexturePalette congratu;
     TexturePalette halloffa;
+    TexturePalette select_players;
     
     Glyphs glyphs;
     Font font;
@@ -106,6 +144,9 @@ typedef struct {
     uint8_t* campaign_levels[15];
     int campaign_level_count;
     int player_lives;
+
+    PlayerRoster roster;
+    GameStats game_stats[MAX_PLAYERS];
 
     InputConfig input_config;
     GameOptions options;
