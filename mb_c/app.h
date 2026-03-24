@@ -110,7 +110,9 @@ typedef struct {
     TexturePalette congratu;
     TexturePalette halloffa;
     TexturePalette select_players;
-    
+    TexturePalette edit_help;
+    TexturePalette edit_panel;
+
     Glyphs glyphs;
     Font font;
     char registered[256];

@@ -1739,7 +1739,8 @@ static void apply_game_remote(World* world, int p) {
 // ==================== Netgame input exchange ====================
 
 static bool net_exchange_inputs(NetContext* net, uint8_t local_input,
-                                uint8_t all_inputs[NET_MAX_PLAYERS], uint32_t frame) {
+                                uint8_t all_inputs[NET_MAX_PLAYERS], uint32_t frame,
+                                Uint32 frame_start, int tick_ms) {
     if (net->is_server) {
         all_inputs[net->local_player] = local_input;
         bool received[NET_MAX_PLAYERS] = {false};
@@ -1767,7 +1768,13 @@ static bool net_exchange_inputs(NetContext* net, uint8_t local_input,
                     return false;
                 }
             }
+            SDL_Delay(1);
         }
+
+        // Server paces the game: wait until tick_ms since frame_start
+        Uint32 elapsed = SDL_GetTicks() - frame_start;
+        if ((int)elapsed < tick_ms)
+            SDL_Delay((Uint32)(tick_ms - (int)elapsed));
 
         // Broadcast combined tick to all clients
         NetMessage tick = {0};
@@ -1787,7 +1794,7 @@ static bool net_exchange_inputs(NetContext* net, uint8_t local_input,
         net_send_to(net->server_peer, &msg);
         net_flush(net);
 
-        // Wait for tick from server
+        // Wait for tick from server (server paces the game)
         Uint32 start = SDL_GetTicks();
         while (SDL_GetTicks() - start < 2000) {
             NetMessage recv;
@@ -1800,6 +1807,7 @@ static bool net_exchange_inputs(NetContext* net, uint8_t local_input,
                     return false;
                 }
             }
+            SDL_Delay(1);
         }
         return false;
     }
@@ -1856,13 +1864,12 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
 
     canvas_init(app, ctx, &world);
 
-    // Frame timing: base tick = 20ms (50fps), speed scales it
-    // speed_pct 100 = normal, 50 = half speed, etc.
-    int speed_pct = 100 - (int)app->options.speed;
-    if (speed_pct < 1) speed_pct = 1;
-    // tick_ms = 20 at 100%, 40 at 50%, etc. Minimum 16ms (cap at ~60fps)
+    // Frame timing: base tick = 20ms at 100% speed
+    // speed 50% = 40ms ticks (half speed), 200% = 10ms ticks (double speed)
+    int speed_pct = (int)app->options.speed;
+    if (speed_pct < 50) speed_pct = 50;
     int tick_ms = 2000 / speed_pct;
-    if (tick_ms < 16) tick_ms = 16;
+    if (tick_ms < 10) tick_ms = 10;
 
     bool running = true, quit_requested = false;
     explosion_app = app;
@@ -1892,7 +1899,7 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
             }
 
             uint8_t all_inputs[NET_MAX_PLAYERS] = {0};
-            if (!net_exchange_inputs(net, local_input, all_inputs, (uint32_t)world.round_counter)) {
+            if (!net_exchange_inputs(net, local_input, all_inputs, (uint32_t)world.round_counter, frame_start, tick_ms)) {
                 running = false;
                 quit_requested = true;
             } else {
@@ -2318,10 +2325,16 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
         }
 
         context_present(ctx);
-        // Frame pacing: wait until tick_ms has elapsed
-        Uint32 frame_elapsed = SDL_GetTicks() - frame_start;
-        if ((int)frame_elapsed < tick_ms)
-            SDL_Delay((Uint32)(tick_ms - (int)frame_elapsed));
+        // Frame pacing: wait until tick_ms has elapsed (local play only;
+        // for netplay the server paces inside net_exchange_inputs)
+#ifdef MB_NET
+        if (!net)
+#endif
+        {
+            Uint32 frame_elapsed = SDL_GetTicks() - frame_start;
+            if ((int)frame_elapsed < tick_ms)
+                SDL_Delay((Uint32)(tick_ms - (int)frame_elapsed));
+        }
     }
 
     if (world.canvas) SDL_DestroyTexture(world.canvas);
