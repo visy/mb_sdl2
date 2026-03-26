@@ -45,4 +45,7 @@ void input_print(const InputConfig* config);
 // Helper to check if an event matches an action for a player
 ActionType input_map_event(const SDL_Event* e, int p_idx, InputConfig* config);
 
+// Poll whether an action is currently held (key down, button pressed, or axis deflected)
+bool input_action_held(InputConfig* config, int p_idx, ActionType action);
+
 #endif // INPUT_H

@@ -265,3 +265,23 @@ ActionType input_map_event(const SDL_Event* e, int p_idx, InputConfig* config) {
 
     return ACT_MAX_PLAYER;
 }
+
+bool input_action_held(InputConfig* config, int p_idx, ActionType action) {
+    const Uint8* keys = SDL_GetKeyboardState(NULL);
+    PlayerInputConfig* pic = &config->p[p_idx];
+    for (int b = 0; b < MAX_BINDINGS; b++) {
+        Binding* bind = &pic->bindings[action][b];
+        if (bind->type == BIND_NONE) break;
+        if (bind->type == BIND_KEY && keys[bind->id]) return true;
+        if (bind->type == BIND_AXIS && config->axis_state[p_idx][bind->id] == bind->extra) return true;
+        if (bind->type == BIND_BTN) {
+            // Check if any controller has this button pressed for this player's pad
+            SDL_JoystickID jid = config->pad_id[p_idx];
+            if (jid >= 0) {
+                SDL_GameController* gc = SDL_GameControllerFromInstanceID(jid);
+                if (gc && SDL_GameControllerGetButton(gc, (SDL_GameControllerButton)bind->id)) return true;
+            }
+        }
+    }
+    return false;
+}

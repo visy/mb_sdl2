@@ -1773,6 +1773,9 @@ static void app_run_editor(App* app, ApplicationContext* ctx) {
     bool modified = false;
     int pal_scroll = 0; // first tile index shown in palette
 
+    Uint32 last_move = 0; // timestamp for held-key repeat suppression
+    bool move_repeating = false; // true after initial delay has passed
+
     #define ED_UNDO_SAVE() editor_push_undo(undo_buf, &undo_top, &undo_count, tiles)
     ED_UNDO_SAVE();
 
@@ -1945,36 +1948,63 @@ static void app_run_editor(App* app, ApplicationContext* ctx) {
                 }
             }
 
-            // --- Keyboard shortcuts ---
-            if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-                int prev_cx = cx, prev_cy = cy;
-                switch (e.key.keysym.scancode) {
-                    case SDL_SCANCODE_UP: case SDL_SCANCODE_KP_8: if (cy > 0) cy--; break;
-                    case SDL_SCANCODE_DOWN: case SDL_SCANCODE_KP_2: if (cy < MAP_HEIGHT - 1) cy++; break;
-                    case SDL_SCANCODE_LEFT: case SDL_SCANCODE_KP_4: if (cx > 0) cx--; break;
-                    case SDL_SCANCODE_RIGHT: case SDL_SCANCODE_KP_6: if (cx < MAP_WIDTH - 1) cx++; break;
-
-                    case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: {
-                        uint8_t tile = EDITOR_TILES[left_idx];
-                        if (mode == EDMODE_FILL) { ED_UNDO_SAVE(); editor_flood_fill(tiles, cx, cy, tile); modified = true; }
-                        else if (mode == EDMODE_BOX) {
-                            if (mark_x < 0) { mark_x = cx; mark_y = cy; }
-                            else { ED_UNDO_SAVE();
-                                editor_draw_box(tiles, mark_x, mark_y, cx, cy, brush, tile);
-                                mark_x = -1; mark_y = -1; modified = true; }
-                        } else { ED_UNDO_SAVE(); editor_place_brush(tiles, cx, cy, brush, tile); modified = true; }
-                        need_redraw = true; break;
+            // --- Joypad / player 0 mapped input ---
+            {
+                // Skip mapped input when Ctrl/Shift/Alt held (those are keyboard-only shortcuts)
+                bool has_mod = (e.type == SDL_KEYDOWN && (SDL_GetModState() & (KMOD_CTRL | KMOD_SHIFT | KMOD_ALT)));
+                ActionType act = has_mod ? ACT_MAX_PLAYER : input_map_event(&e, 0, &app->input_config);
+                if (act != ACT_MAX_PLAYER) {
+                    int prev_cx = cx, prev_cy = cy;
+                    switch (act) {
+                        case ACT_UP:    if (cy > 0) cy--; break;
+                        case ACT_DOWN:  if (cy < MAP_HEIGHT - 1) cy++; break;
+                        case ACT_LEFT:  if (cx > 0) cx--; break;
+                        case ACT_RIGHT: if (cx < MAP_WIDTH - 1) cx++; break;
+                        case ACT_ACTION: {
+                            uint8_t tile = EDITOR_TILES[left_idx];
+                            if (mode == EDMODE_FILL) { ED_UNDO_SAVE(); editor_flood_fill(tiles, cx, cy, tile); modified = true; }
+                            else if (mode == EDMODE_BOX) {
+                                if (mark_x < 0) { mark_x = cx; mark_y = cy; }
+                                else { ED_UNDO_SAVE(); editor_draw_box(tiles, mark_x, mark_y, cx, cy, brush, tile); mark_x = -1; mark_y = -1; modified = true; }
+                            } else { ED_UNDO_SAVE(); editor_place_brush(tiles, cx, cy, brush, tile); modified = true; }
+                            need_redraw = true; break;
+                        }
+                        case ACT_STOP: {
+                            ED_UNDO_SAVE(); editor_place_brush(tiles, cx, cy, brush, EDITOR_TILES[right_idx]);
+                            modified = true; need_redraw = true; break;
+                        }
+                        case ACT_CYCLE: {
+                            // Cycle mode: dot→line→box→fill→dot
+                            mode = (EditorMode)((mode + 1) % 4); mark_x = -1; need_redraw = true; break;
+                        }
+                        case ACT_REMOTE: {
+                            // Cycle left tile forward
+                            left_idx = (left_idx + 1) % EDITOR_TILE_COUNT; need_redraw = true; break;
+                        }
+                        case ACT_GOD: {
+                            // Cycle right tile forward
+                            right_idx = (right_idx + 1) % EDITOR_TILE_COUNT; need_redraw = true; break;
+                        }
+                        default: break;
                     }
-                    case SDL_SCANCODE_DELETE: case SDL_SCANCODE_BACKSPACE:
-                        ED_UNDO_SAVE(); editor_place_brush(tiles, cx, cy, brush, EDITOR_TILES[right_idx]);
-                        modified = true; need_redraw = true; break;
+                    if (cx != prev_cx || cy != prev_cy) {
+                        last_move = SDL_GetTicks();
+                        move_repeating = false;
+                        if (continuous) { editor_place_brush(tiles, cx, cy, brush, EDITOR_TILES[left_idx]); modified = true; }
+                        need_redraw = true;
+                    }
+                }
+            }
 
-                    case SDL_SCANCODE_SPACE: continuous = !continuous; need_redraw = true; break;
-
+            // --- Keyboard-only shortcuts (not duplicated by input_map_event) ---
+            if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+                switch (e.key.keysym.scancode) {
                     case SDL_SCANCODE_PAGEUP: if (left_idx > 0) left_idx--; need_redraw = true; break;
                     case SDL_SCANCODE_PAGEDOWN: if (left_idx < EDITOR_TILE_COUNT - 1) left_idx++; need_redraw = true; break;
                     case SDL_SCANCODE_COMMA: if (right_idx > 0) right_idx--; need_redraw = true; break;
                     case SDL_SCANCODE_PERIOD: if (right_idx < EDITOR_TILE_COUNT - 1) right_idx++; need_redraw = true; break;
+
+                    case SDL_SCANCODE_SPACE: continuous = !continuous; need_redraw = true; break;
 
                     case SDL_SCANCODE_TAB: {
                         uint8_t under = tiles[cy * 66 + cx];
@@ -2002,8 +2032,6 @@ static void app_run_editor(App* app, ApplicationContext* ctx) {
                     case SDL_SCANCODE_Z:
                         if (SDL_GetModState() & KMOD_CTRL) {
                             if (editor_pop_undo(undo_buf, &undo_top, &undo_count, tiles)) { modified = true; need_redraw = true; }
-                        } else {
-                            ED_UNDO_SAVE(); editor_insert_random_treasure(tiles, cx, cy); modified = true; need_redraw = true;
                         }
                         break;
                     case SDL_SCANCODE_U:
@@ -2040,29 +2068,32 @@ static void app_run_editor(App* app, ApplicationContext* ctx) {
                     case SDL_SCANCODE_ESCAPE: case SDL_SCANCODE_F10: running = false; break;
                     default: break;
                 }
-                if (continuous && (cx != prev_cx || cy != prev_cy)) {
-                    editor_place_brush(tiles, cx, cy, brush, EDITOR_TILES[left_idx]);
-                    modified = true;
-                }
-                if (cx != prev_cx || cy != prev_cy) need_redraw = true;
             }
         }
 
-        // Held-key cursor repeat
+        // Held-key / held-stick cursor repeat (300ms initial delay, then 50ms repeat)
         {
-            static Uint32 last_move = 0;
             Uint32 now = SDL_GetTicks();
-            if (now - last_move > 50) {
-                const Uint8* keys = SDL_GetKeyboardState(NULL);
-                int prev_cx = cx, prev_cy = cy;
-                if (keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_KP_8]) { if (cy > 0) cy--; }
-                if (keys[SDL_SCANCODE_DOWN] || keys[SDL_SCANCODE_KP_2]) { if (cy < MAP_HEIGHT - 1) cy++; }
-                if (keys[SDL_SCANCODE_LEFT] || keys[SDL_SCANCODE_KP_4]) { if (cx > 0) cx--; }
-                if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_KP_6]) { if (cx < MAP_WIDTH - 1) cx++; }
-                if (cx != prev_cx || cy != prev_cy) {
-                    last_move = now;
-                    if (continuous) { editor_place_brush(tiles, cx, cy, brush, EDITOR_TILES[left_idx]); modified = true; }
-                    need_redraw = true;
+            Uint32 delay = move_repeating ? 50 : 300;
+            if (now - last_move > delay) {
+                bool hu = input_action_held(&app->input_config, 0, ACT_UP);
+                bool hd = input_action_held(&app->input_config, 0, ACT_DOWN);
+                bool hl = input_action_held(&app->input_config, 0, ACT_LEFT);
+                bool hr = input_action_held(&app->input_config, 0, ACT_RIGHT);
+                if (hu || hd || hl || hr) {
+                    int prev_cx = cx, prev_cy = cy;
+                    if (hu) { if (cy > 0) cy--; }
+                    if (hd) { if (cy < MAP_HEIGHT - 1) cy++; }
+                    if (hl) { if (cx > 0) cx--; }
+                    if (hr) { if (cx < MAP_WIDTH - 1) cx++; }
+                    if (cx != prev_cx || cy != prev_cy) {
+                        last_move = now;
+                        move_repeating = true;
+                        if (continuous) { editor_place_brush(tiles, cx, cy, brush, EDITOR_TILES[left_idx]); modified = true; }
+                        need_redraw = true;
+                    }
+                } else {
+                    move_repeating = false;
                 }
             }
         }
