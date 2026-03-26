@@ -1859,6 +1859,17 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
             + 5 * app->player_inventory[p][EQUIP_DRILL];
     }
 
+    // Clear player start tiles to passage and collect any items there
+    for (int p = 0; p < world.num_players; p++) {
+        int sx = world.actors[p].pos.x / 10;
+        int sy = (world.actors[p].pos.y - 30) / 10;
+        if (sx >= 0 && sx < MAP_WIDTH && sy >= 0 && sy < MAP_HEIGHT) {
+            player_interact_tile(app, &world, p, sx, sy);
+            world.tiles[sy][sx] = TILE_PASSAGE;
+            world.hits[sy][sx] = 0;
+        }
+    }
+
     Uint32 round_start = SDL_GetTicks();
     Uint32 round_time_ms = (Uint32)app->options.round_time_secs * 1000;
 

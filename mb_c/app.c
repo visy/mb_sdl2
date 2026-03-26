@@ -1,6 +1,7 @@
 #include "app.h"
 #include "game.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <dirent.h>
 #include <ctype.h>
@@ -767,13 +768,15 @@ static void render_level_grid(App* app, ApplicationContext* ctx, int cursor, int
         for (int p = 0; p < pick_count; p++) { if (picks[p] == i) { is_picked = true; break; } }
         bool is_cursor = (i == cursor);
 
-        int color_idx;
+        SDL_Color color;
         if (i == 0) {
-            // Random: cursor state doesn't affect color
-            color_idx = is_picked ? 5 : 4;
+            color = pal[is_picked ? 5 : 4];
+        } else if (is_cursor) {
+            // Bright yellow for cursor highlight
+            SDL_Color bright = {255, 255, 0, 255};
+            color = is_picked ? bright : bright;
         } else {
-            if (is_cursor) color_idx = is_picked ? 6 : 0;
-            else color_idx = is_picked ? 7 : 1;
+            color = pal[is_picked ? 7 : 1];
         }
 
         const char* name = (i == 0) ? "Random" : app->level_names[i - 1];
@@ -783,7 +786,7 @@ static void render_level_grid(App* app, ApplicationContext* ctx, int cursor, int
         char* dot = strrchr(short_name, '.');
         if (dot) *dot = '\0';
 
-        render_text(ctx->renderer, &app->font, x + 4, y, pal[color_idx], short_name);
+        render_text(ctx->renderer, &app->font, x + 4, y, color, short_name);
     }
 
     // Level preview
@@ -813,7 +816,47 @@ static void render_level_grid(App* app, ApplicationContext* ctx, int cursor, int
     SDL_SetRenderTarget(ctx->renderer, NULL); context_present(ctx);
 }
 
+static void app_reload_levels(App* app, ApplicationContext* ctx) {
+    for (int i = 0; i < app->level_count; ++i) { free(app->level_data[i]); app->level_data[i] = NULL; }
+    app->level_count = 0;
+    DIR* d = opendir(ctx->game_dir);
+    if (d) {
+        struct dirent* dir;
+        while ((dir = readdir(d)) != NULL) {
+            char* ext = strrchr(dir->d_name, '.');
+            if (ext && (STRICMP(ext, ".MNL") == 0 || STRICMP(ext, ".MNE") == 0)
+                && STRNICMP(dir->d_name, "LEVEL", 5) != 0) {
+                if (app->level_count < 128) {
+                    char path[MAX_PATH];
+#ifdef _WIN32
+                    snprintf(path, sizeof(path), "%s\\%s", ctx->game_dir, dir->d_name);
+#else
+                    snprintf(path, sizeof(path), "%s/%s", ctx->game_dir, dir->d_name);
+#endif
+                    FILE* lf = fopen(path, "rb");
+                    if (lf) {
+                        fseek(lf, 0, SEEK_END);
+                        long size = ftell(lf);
+                        fseek(lf, 0, SEEK_SET);
+                        if (size >= 2970) {
+                            app->level_data[app->level_count] = malloc(size);
+                            if (app->level_data[app->level_count]) {
+                                fread(app->level_data[app->level_count], 1, size, lf);
+                                snprintf(app->level_names[app->level_count], 32, "%s", dir->d_name);
+                                app->level_count++;
+                            }
+                        }
+                        fclose(lf);
+                    }
+                }
+            }
+        }
+        closedir(d);
+    }
+}
+
 static void app_run_level_select(App* app, ApplicationContext* ctx) {
+    app_reload_levels(app, ctx);
     int cursor = 0;
     int picks[128]; int pick_count = 0;
     int max_picks = app->options.rounds;
@@ -1049,6 +1092,7 @@ static bool app_run_shop_batch(App* app, ApplicationContext* ctx, int players[],
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) return false;
+            if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F10) return false;
             for (int panel = 0; panel < num_panels; ++panel) {
                 int pi = players[panel];
                 ActionType act = input_map_event(&e, pi, &app->input_config);
@@ -1210,30 +1254,19 @@ typedef enum { EDMODE_DOT, EDMODE_LINE, EDMODE_BOX, EDMODE_FILL } EditorMode;
 
 // Tile palette for the editor: tiles available for placement
 static const uint8_t EDITOR_TILES[] = {
-    TILE_PASSAGE, TILE_WALL, TILE_SAND1, TILE_SAND2, TILE_SAND3,
-    TILE_GRAVEL_LIGHT, TILE_GRAVEL_HEAVY,
+    // Row 0 — matches EDITHELP.SPY palette layout exactly
+    TILE_PASSAGE, TILE_SAND1, TILE_GRAVEL_LIGHT, TILE_GRAVEL_HEAVY,
     TILE_STONE_TOP_LEFT, TILE_STONE_TOP_RIGHT, TILE_STONE_BOTTOM_RIGHT, TILE_STONE_BOTTOM_LEFT,
-    TILE_BOULDER, TILE_STONE1, TILE_STONE2, TILE_STONE3, TILE_STONE4,
-    TILE_FURRY_RIGHT, TILE_FURRY_LEFT, TILE_FURRY_UP, TILE_FURRY_DOWN,
-    TILE_GRENADIER_RIGHT, TILE_GRENADIER_LEFT, TILE_GRENADIER_UP, TILE_GRENADIER_DOWN,
-    TILE_SLIME_RIGHT, TILE_SLIME_LEFT, TILE_SLIME_UP, TILE_SLIME_DOWN,
-    TILE_ALIEN_RIGHT, TILE_ALIEN_LEFT, TILE_ALIEN_UP, TILE_ALIEN_DOWN,
-    TILE_SMALL_BOMB1, TILE_BIG_BOMB1, TILE_DYNAMITE1,
-    TILE_MINE, TILE_EXIT, TILE_DOOR, TILE_MEDIKIT, TILE_BIOMASS,
-    TILE_DIAMOND, TILE_WEAPONS_CRATE,
-    TILE_NAPALM1, TILE_LARGE_CRUCIFIX_BOMB, TILE_SMALL_CRUCIFIX_BOMB,
-    TILE_PLASTIC, TILE_BARREL, TILE_JUMPING_BOMB, TILE_BRICK,
-    TILE_TELEPORT, TILE_BUTTON_OFF,
+    TILE_BOULDER, TILE_STONE1, TILE_WALL, TILE_BARREL,
+    TILE_MINE, TILE_TELEPORT, TILE_GRENADIER_RIGHT, TILE_ALIEN_RIGHT,
+    TILE_MEDIKIT, TILE_STONE_CRACKED_HEAVY, TILE_BRICK, TILE_BRICK_CRACKED_HEAVY, TILE_BUTTON_OFF,
+    // Row 1
+    TILE_SMALL_PICKAXE, TILE_LARGE_PICKAXE, TILE_DRILL,
     TILE_GOLD_SHIELD, TILE_GOLD_EGG, TILE_GOLD_PILE, TILE_GOLD_BRACELET,
     TILE_GOLD_BAR, TILE_GOLD_CROSS, TILE_GOLD_SCEPTER, TILE_GOLD_RUBIN, TILE_GOLD_CROWN,
-    TILE_SMALL_PICKAXE, TILE_LARGE_PICKAXE, TILE_DRILL,
-    TILE_METAL_WALL_PLACED, TILE_LIFE_ITEM,
-    TILE_ATOMIC1,
-    TILE_SMALL_RADIO_BLUE, TILE_BIG_RADIO_BLUE,
-    TILE_SMALL_RADIO_GREEN, TILE_BIG_RADIO_GREEN,
-    TILE_SMALL_RADIO_YELLOW, TILE_BIG_RADIO_YELLOW,
-    TILE_SMALL_RADIO_RED, TILE_BIG_RADIO_RED,
-    TILE_DIGGER_BOMB,
+    TILE_WEAPONS_CRATE, TILE_FURRY_RIGHT, TILE_SLIME_RIGHT,
+    TILE_EXIT, TILE_BIOMASS, TILE_STONE_CRACKED_LIGHT, TILE_BRICK_CRACKED_LIGHT,
+    TILE_PLASTIC, TILE_DOOR,
 };
 #define EDITOR_TILE_COUNT (int)(sizeof(EDITOR_TILES) / sizeof(EDITOR_TILES[0]))
 
@@ -1326,87 +1359,109 @@ static const uint8_t TREASURE_TILES[] = {
 };
 #define TREASURE_COUNT (int)(sizeof(TREASURE_TILES) / sizeof(TREASURE_TILES[0]))
 
+// Map monster spawner tile values to their monster glyph (right-facing, frame 0)
+static GlyphType editor_tile_glyph(uint8_t val) {
+    switch (val) {
+        case TILE_FURRY_RIGHT:  case TILE_FURRY_LEFT:  case TILE_FURRY_UP:  case TILE_FURRY_DOWN:
+            return (GlyphType)(GLYPH_MONSTER_FURRY + (val - TILE_FURRY_RIGHT));
+        case TILE_GRENADIER_RIGHT: case TILE_GRENADIER_LEFT: case TILE_GRENADIER_UP: case TILE_GRENADIER_DOWN:
+            return (GlyphType)(GLYPH_MONSTER_GRENADIER + (val - TILE_GRENADIER_RIGHT));
+        case TILE_SLIME_RIGHT: case TILE_SLIME_LEFT: case TILE_SLIME_UP: case TILE_SLIME_DOWN:
+            return (GlyphType)(GLYPH_MONSTER_SLIME + (val - TILE_SLIME_RIGHT));
+        case TILE_ALIEN_RIGHT: case TILE_ALIEN_LEFT: case TILE_ALIEN_UP: case TILE_ALIEN_DOWN:
+            return (GlyphType)(GLYPH_MONSTER_ALIEN + (val - TILE_ALIEN_RIGHT));
+        default:
+            return (GlyphType)(GLYPH_MAP_START + val);
+    }
+}
+
 static void editor_render_map(App* app, ApplicationContext* ctx, uint8_t* tiles, int map_y) {
     SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
     for (int y = 0; y < MAP_HEIGHT; y++) {
         for (int x = 0; x < MAP_WIDTH; x++) {
             uint8_t val = tiles[y * 66 + x];
-            glyphs_render(&app->glyphs, ctx->renderer, x * TILE_SIZE, y * TILE_SIZE + map_y, (GlyphType)(GLYPH_MAP_START + val));
+            glyphs_render(&app->glyphs, ctx->renderer, x * TILE_SIZE, y * TILE_SIZE + map_y, editor_tile_glyph(val));
         }
     }
 }
 
 static void editor_render_cursor(ApplicationContext* ctx, int cx, int cy, int brush, int map_y) {
     SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
-    int sz = brush * TILE_SIZE;
-    int px = cx * TILE_SIZE, py = cy * TILE_SIZE + map_y;
-    SDL_Rect r = {px, py, sz, sz};
     SDL_SetRenderDrawColor(ctx->renderer, 255, 255, 255, 255);
-    SDL_RenderDrawRect(ctx->renderer, &r);
-}
-
-static void editor_place_brush(uint8_t* tiles, int cx, int cy, int brush, uint8_t tile) {
-    for (int dy = 0; dy < brush; dy++)
-        for (int dx = 0; dx < brush; dx++) {
-            int tx = cx + dx, ty = cy + dy;
-            if (tx >= 0 && tx < MAP_WIDTH && ty >= 0 && ty < MAP_HEIGHT)
-                tiles[ty * 66 + tx] = tile;
+    float rad = brush * 0.5f;
+    float rsq = rad * rad;
+    int ri = (int)(rad + 1);
+    for (int dy = -ri; dy <= ri; dy++)
+        for (int dx = -ri; dx <= ri; dx++) {
+            if ((float)(dx * dx + dy * dy) <= rsq) {
+                int tx = cx + dx, ty = cy + dy;
+                if (tx >= 1 && tx < MAP_WIDTH - 1 && ty >= 1 && ty < MAP_HEIGHT - 1) {
+                    SDL_Rect rect = {tx * TILE_SIZE, ty * TILE_SIZE + map_y, TILE_SIZE, TILE_SIZE};
+                    SDL_RenderDrawRect(ctx->renderer, &rect);
+                }
+            }
         }
 }
 
-static void editor_draw_line(uint8_t* tiles, int x0, int y0, int x1, int y1, int brush, uint8_t tile) {
-    int dx = abs(x1 - x0), dy = abs(y1 - y0);
-    int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
-    int err = dx - dy;
-    for (;;) {
-        editor_place_brush(tiles, x0, y0, brush, tile);
-        if (x0 == x1 && y0 == y1) break;
-        int e2 = 2 * err;
-        if (e2 > -dy) { err -= dy; x0 += sx; }
-        if (e2 < dx) { err += dx; y0 += sy; }
+// Auto-vary sand: when placing SAND1, randomly pick SAND1/SAND2/SAND3
+static uint8_t editor_vary_tile(uint8_t tile) {
+    if (tile == TILE_SAND1) {
+        static const uint8_t sands[] = {TILE_SAND1, TILE_SAND2, TILE_SAND3};
+        return sands[rand() % 3];
     }
+    return tile;
+}
+
+static void editor_place_brush(uint8_t* tiles, int cx, int cy, int brush, uint8_t tile) {
+    float rad = brush * 0.5f;
+    float rsq = rad * rad;
+    int ri = (int)(rad + 1);
+    for (int dy = -ri; dy <= ri; dy++)
+        for (int dx = -ri; dx <= ri; dx++) {
+            if ((float)(dx * dx + dy * dy) <= rsq) {
+                int tx = cx + dx, ty = cy + dy;
+                if (tx >= 1 && tx < MAP_WIDTH - 1 && ty >= 1 && ty < MAP_HEIGHT - 1)
+                    tiles[ty * 66 + tx] = editor_vary_tile(tile);
+            }
+        }
 }
 
 static void editor_draw_box(uint8_t* tiles, int x0, int y0, int x1, int y1, int brush, uint8_t tile) {
+    (void)brush;
     int minx = x0 < x1 ? x0 : x1, maxx = x0 > x1 ? x0 : x1;
     int miny = y0 < y1 ? y0 : y1, maxy = y0 > y1 ? y0 : y1;
-    for (int x = minx; x <= maxx; x++) {
-        editor_place_brush(tiles, x, miny, brush, tile);
-        editor_place_brush(tiles, x, maxy, brush, tile);
-    }
-    for (int y = miny + 1; y < maxy; y++) {
-        editor_place_brush(tiles, minx, y, brush, tile);
-        editor_place_brush(tiles, maxx, y, brush, tile);
-    }
-}
-
-static void editor_fill_rect(uint8_t* tiles, int x1, int y1, int x2, int y2, uint8_t tile) {
-    int minx = x1 < x2 ? x1 : x2, maxx = x1 > x2 ? x1 : x2;
-    int miny = y1 < y2 ? y1 : y2, maxy = y1 > y2 ? y1 : y2;
+    if (minx < 1) minx = 1; if (maxx > MAP_WIDTH - 2) maxx = MAP_WIDTH - 2;
+    if (miny < 1) miny = 1; if (maxy > MAP_HEIGHT - 2) maxy = MAP_HEIGHT - 2;
     for (int y = miny; y <= maxy; y++)
         for (int x = minx; x <= maxx; x++)
-            tiles[y * 66 + x] = tile;
+            tiles[y * 66 + x] = editor_vary_tile(tile);
 }
 
 static void editor_flood_fill(uint8_t* tiles, int sx, int sy, uint8_t tile) {
     uint8_t target = tiles[sy * 66 + sx];
+    // For sand auto-vary, treat all sand variants as same target
+    bool target_is_sand = (target == TILE_SAND1 || target == TILE_SAND2 || target == TILE_SAND3);
+    bool fill_is_sand = (tile == TILE_SAND1);
     if (target == tile) return;
-    // Simple stack-based flood fill
+    if (target_is_sand && fill_is_sand) return;  // already sand
     typedef struct { int16_t x, y; } Pt;
     Pt* stack = (Pt*)malloc(MAP_WIDTH * MAP_HEIGHT * sizeof(Pt));
     if (!stack) return;
     int top = 0;
     stack[top++] = (Pt){(int16_t)sx, (int16_t)sy};
-    tiles[sy * 66 + sx] = tile;
+    tiles[sy * 66 + sx] = editor_vary_tile(tile);
     while (top > 0) {
         Pt p = stack[--top];
         const int dx[] = {0, 0, -1, 1};
         const int dy[] = {-1, 1, 0, 0};
         for (int d = 0; d < 4; d++) {
             int nx = p.x + dx[d], ny = p.y + dy[d];
-            if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT && tiles[ny * 66 + nx] == target) {
-                tiles[ny * 66 + nx] = tile;
-                stack[top++] = (Pt){(int16_t)nx, (int16_t)ny};
+            if (nx >= 1 && nx < MAP_WIDTH - 1 && ny >= 1 && ny < MAP_HEIGHT - 1) {
+                uint8_t t = tiles[ny * 66 + nx];
+                if (t == target || (target_is_sand && (t == TILE_SAND1 || t == TILE_SAND2 || t == TILE_SAND3))) {
+                    tiles[ny * 66 + nx] = editor_vary_tile(tile);
+                    stack[top++] = (Pt){(int16_t)nx, (int16_t)ny};
+                }
             }
         }
     }
@@ -1454,10 +1509,12 @@ static void editor_render_toolbar(App* app, ApplicationContext* ctx, int pal_scr
     }
 
     // Left/right tile previews (display only at exact positions)
-    glyphs_render(&app->glyphs, ctx->renderer, ED_LTILE_X, ED_TILE_PY, (GlyphType)(GLYPH_MAP_START + EDITOR_TILES[left_idx]));
-    glyphs_render(&app->glyphs, ctx->renderer, ED_LTILE_X, ED_TILE_PY + 12, (GlyphType)(GLYPH_MAP_START + EDITOR_TILES[right_idx]));
-    glyphs_render(&app->glyphs, ctx->renderer, ED_RTILE_X, ED_TILE_PY, (GlyphType)(GLYPH_MAP_START + EDITOR_TILES[left_idx]));
-    glyphs_render(&app->glyphs, ctx->renderer, ED_RTILE_X, ED_TILE_PY + 12, (GlyphType)(GLYPH_MAP_START + EDITOR_TILES[right_idx]));
+    // Left preview: left-click tile shown twice stacked
+    glyphs_render(&app->glyphs, ctx->renderer, ED_LTILE_X, ED_TILE_PY, editor_tile_glyph(EDITOR_TILES[left_idx]));
+    glyphs_render(&app->glyphs, ctx->renderer, ED_LTILE_X, ED_TILE_PY + 10, editor_tile_glyph(EDITOR_TILES[left_idx]));
+    // Right preview: right-click tile shown twice stacked
+    glyphs_render(&app->glyphs, ctx->renderer, ED_RTILE_X, ED_TILE_PY, editor_tile_glyph(EDITOR_TILES[right_idx]));
+    glyphs_render(&app->glyphs, ctx->renderer, ED_RTILE_X, ED_TILE_PY + 10, editor_tile_glyph(EDITOR_TILES[right_idx]));
 
     // Highlight active drawing tool (line/box/fill) — DOT has no dedicated button
     {
@@ -1486,7 +1543,7 @@ static void editor_render_toolbar(App* app, ApplicationContext* ctx, int pal_scr
             int idx = pal_scroll + row * ED_PAL_COLS + col;
             if (idx < 0 || idx >= EDITOR_TILE_COUNT) continue;
             int px = ED_PAL_X1 + col * ED_PAL_SLOT;
-            glyphs_render(&app->glyphs, ctx->renderer, px, base_y, (GlyphType)(GLYPH_MAP_START + EDITOR_TILES[idx]));
+            glyphs_render(&app->glyphs, ctx->renderer, px, base_y, editor_tile_glyph(EDITOR_TILES[idx]));
             // Yellow highlight for left-selected tile
             if (idx == left_idx) {
                 SDL_Rect sel = {px - 1, base_y - 1, 12, 12};
@@ -1689,7 +1746,7 @@ static void editor_new_level(uint8_t* tiles) {
     for (int y = 0; y < 45; y++) { tiles[y * 66 + 64] = 0; tiles[y * 66 + 65] = 0; }
     for (int y = 1; y < 44; y++)
         for (int x = 1; x < 63; x++)
-            tiles[y * 66 + x] = TILE_SAND1;
+            tiles[y * 66 + x] = editor_vary_tile(TILE_SAND1);
 }
 
 // Convert window mouse coords to buffer coords
@@ -1706,12 +1763,12 @@ static void app_run_editor(App* app, ApplicationContext* ctx) {
     int undo_top = 0, undo_count = 0;
 
     int cx = 1, cy = 1;
-    int left_idx = 2, right_idx = 0; // left=sand1, right=passage
+    int left_idx = 1, right_idx = 0; // left=sand, right=passage
     int brush = 1;
     EditorMode mode = EDMODE_DOT;
     bool continuous = false;
     bool mouse_drawing = false;
-    int mark_x = -1, mark_y = -1;
+    int mark_x = -1, mark_y = -1, box_drag_idx = 0;
     char filename[64] = "NEWLEVEL.MNL";
     bool modified = false;
     int pal_scroll = 0; // first tile index shown in palette
@@ -1824,18 +1881,13 @@ static void app_run_editor(App* app, ApplicationContext* ctx) {
                             ED_UNDO_SAVE();
                             editor_flood_fill(tiles, cx, cy, tile);
                             modified = true;
-                        } else if (mode == EDMODE_LINE || mode == EDMODE_BOX) {
-                            if (mark_x < 0) { mark_x = cx; mark_y = cy; }
-                            else {
-                                ED_UNDO_SAVE();
-                                if (mode == EDMODE_LINE)
-                                    editor_draw_line(tiles, mark_x, mark_y, cx, cy, brush, tile);
-                                else
-                                    editor_draw_box(tiles, mark_x, mark_y, cx, cy, brush, tile);
-                                mark_x = -1; mark_y = -1;
-                                modified = true;
-                            }
+                        } else if (mode == EDMODE_BOX) {
+                            // Start drag for rectangle
+                            mark_x = cx; mark_y = cy;
+                            box_drag_idx = idx;
+                            mouse_drawing = true;
                         } else {
+                            // DOT and LINE modes: continuous paintbrush
                             ED_UNDO_SAVE();
                             editor_place_brush(tiles, cx, cy, brush, tile);
                             modified = true;
@@ -1853,15 +1905,30 @@ static void app_run_editor(App* app, ApplicationContext* ctx) {
                     int tx = bx / TILE_SIZE, ty = (by - ED_MAP_Y) / TILE_SIZE;
                     if (tx >= 0 && tx < MAP_WIDTH && ty >= 0 && ty < MAP_HEIGHT && (tx != cx || ty != cy)) {
                         cx = tx; cy = ty;
-                        Uint32 btns = SDL_GetMouseState(NULL, NULL);
-                        int idx = (btns & SDL_BUTTON_RMASK) ? right_idx : left_idx;
-                        editor_place_brush(tiles, cx, cy, brush, EDITOR_TILES[idx]);
-                        modified = true;
-                        need_redraw = true;
+                        if (mode == EDMODE_BOX && mark_x >= 0) {
+                            // Just update cursor for live preview
+                            need_redraw = true;
+                        } else {
+                            Uint32 btns = SDL_GetMouseState(NULL, NULL);
+                            int idx = (btns & SDL_BUTTON_RMASK) ? right_idx : left_idx;
+                            editor_place_brush(tiles, cx, cy, brush, EDITOR_TILES[idx]);
+                            modified = true;
+                            need_redraw = true;
+                        }
                     }
                 }
             }
-            if (e.type == SDL_MOUSEBUTTONUP) mouse_drawing = false;
+            if (e.type == SDL_MOUSEBUTTONUP) {
+                if (mouse_drawing && mode == EDMODE_BOX && mark_x >= 0) {
+                    // Commit the rectangle on mouse release
+                    ED_UNDO_SAVE();
+                    editor_draw_box(tiles, mark_x, mark_y, cx, cy, brush, EDITOR_TILES[box_drag_idx]);
+                    mark_x = -1; mark_y = -1;
+                    modified = true;
+                    need_redraw = true;
+                }
+                mouse_drawing = false;
+            }
 
             // Mouse wheel scrolls palette
             if (e.type == SDL_MOUSEWHEEL) {
@@ -1890,11 +1957,10 @@ static void app_run_editor(App* app, ApplicationContext* ctx) {
                     case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER: {
                         uint8_t tile = EDITOR_TILES[left_idx];
                         if (mode == EDMODE_FILL) { ED_UNDO_SAVE(); editor_flood_fill(tiles, cx, cy, tile); modified = true; }
-                        else if (mode == EDMODE_LINE || mode == EDMODE_BOX) {
+                        else if (mode == EDMODE_BOX) {
                             if (mark_x < 0) { mark_x = cx; mark_y = cy; }
                             else { ED_UNDO_SAVE();
-                                if (mode == EDMODE_LINE) editor_draw_line(tiles, mark_x, mark_y, cx, cy, brush, tile);
-                                else editor_draw_box(tiles, mark_x, mark_y, cx, cy, brush, tile);
+                                editor_draw_box(tiles, mark_x, mark_y, cx, cy, brush, tile);
                                 mark_x = -1; mark_y = -1; modified = true; }
                         } else { ED_UNDO_SAVE(); editor_place_brush(tiles, cx, cy, brush, tile); modified = true; }
                         need_redraw = true; break;
@@ -2010,22 +2076,16 @@ static void app_run_editor(App* app, ApplicationContext* ctx) {
             // Map
             editor_render_map(app, ctx, tiles, ED_MAP_Y);
 
-            // Line/box preview
-            if ((mode == EDMODE_LINE || mode == EDMODE_BOX) && mark_x >= 0) {
+            // Box preview (two-click rectangle)
+            if (mode == EDMODE_BOX && mark_x >= 0) {
                 SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
                 SDL_SetRenderDrawColor(ctx->renderer, 255, 255, 0, 255);
-                if (mode == EDMODE_LINE) {
-                    SDL_RenderDrawLine(ctx->renderer,
-                        mark_x * TILE_SIZE + TILE_SIZE / 2, mark_y * TILE_SIZE + ED_MAP_Y + TILE_SIZE / 2,
-                        cx * TILE_SIZE + TILE_SIZE / 2, cy * TILE_SIZE + ED_MAP_Y + TILE_SIZE / 2);
-                } else {
-                    int x0 = (mark_x < cx ? mark_x : cx) * TILE_SIZE;
-                    int y0 = (mark_y < cy ? mark_y : cy) * TILE_SIZE + ED_MAP_Y;
-                    int x1 = (mark_x > cx ? mark_x : cx) * TILE_SIZE + TILE_SIZE;
-                    int y1 = (mark_y > cy ? mark_y : cy) * TILE_SIZE + ED_MAP_Y + TILE_SIZE;
-                    SDL_Rect pr = {x0, y0, x1 - x0, y1 - y0};
-                    SDL_RenderDrawRect(ctx->renderer, &pr);
-                }
+                int x0 = (mark_x < cx ? mark_x : cx) * TILE_SIZE;
+                int y0 = (mark_y < cy ? mark_y : cy) * TILE_SIZE + ED_MAP_Y;
+                int x1 = (mark_x > cx ? mark_x : cx) * TILE_SIZE + TILE_SIZE;
+                int y1 = (mark_y > cy ? mark_y : cy) * TILE_SIZE + ED_MAP_Y + TILE_SIZE;
+                SDL_Rect pr = {x0, y0, x1 - x0, y1 - y0};
+                SDL_RenderDrawRect(ctx->renderer, &pr);
             }
 
             // Toolbar (MINEDIT2.SPY bg + overlays)
