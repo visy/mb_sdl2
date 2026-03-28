@@ -7,7 +7,6 @@
 typedef enum {
     ACT_UP, ACT_DOWN, ACT_LEFT, ACT_RIGHT,
     ACT_STOP, ACT_ACTION, ACT_CYCLE, ACT_REMOTE,
-    ACT_GOD,
     ACT_PAUSE,
     ACT_MAX_PLAYER
 } ActionType;

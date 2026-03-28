@@ -181,7 +181,6 @@ typedef struct {
     int round_end_timer;
     int round_counter;
     bool exited;
-    bool god_mode;
     uint8_t bomb_damage;
     bool darkness;
     bool campaign_mode;

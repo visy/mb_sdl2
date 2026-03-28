@@ -12,7 +12,6 @@
 #define NET_INPUT_CYCLE     0x10
 #define NET_INPUT_REMOTE    0x20
 #define NET_INPUT_QUIT      0x40
-#define NET_INPUT_GOD       0x80
 
 #ifdef MB_NET
 

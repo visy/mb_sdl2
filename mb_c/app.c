@@ -190,6 +190,10 @@ static void roster_update_stats(RosterInfo* dest, const GameStats* src, bool tou
 // --- Pause Menu ---
 // Check if event is a pause trigger (ACT_PAUSE from any player)
 bool is_pause_event(const SDL_Event* e, InputConfig* config) {
+    // Skip axis events — pause is only bound to keys/buttons, and calling
+    // input_map_event on axis events would consume the state change needed
+    // for navigation (up/down) in menus and the editor.
+    if (e->type == SDL_CONTROLLERAXISMOTION) return false;
     for (int p = 0; p < 4; p++) {
         ActionType act = input_map_event(e, p, config);
         if (act == ACT_PAUSE) return true;
@@ -593,7 +597,7 @@ static void render_main_menu(App* app, ApplicationContext* ctx, SelectedMenu sel
     render_text(ctx->renderer, &app->font, menu_cx - (int)strlen(h1) * 4, line_y, hint_col, h1);
     line_y += 10;
 #endif
-    const char* h2 = "F2:LEVEL EDITOR";
+    const char* h2 = "F2/SELECT:LEVEL EDITOR";
     render_text(ctx->renderer, &app->font, menu_cx - (int)strlen(h2) * 4, line_y, hint_col, h2);
     SDL_SetRenderTarget(ctx->renderer, NULL);
 }
@@ -1704,32 +1708,89 @@ static bool editor_load_level(uint8_t* tiles, const char* game_dir, const char* 
     return true;
 }
 
-// Name entry dialog for save-as (returns true if name was entered)
-static bool editor_name_dialog(App* app, ApplicationContext* ctx, char* out_name, int max_len, const char* prompt) {
-    char buf[64] = "";
+// ==================== Shared text entry with on-screen keyboard ====================
+// Supports keyboard typing AND gamepad: dpad navigates grid, A=insert, B=delete, Start=confirm, Back=cancel
+// flags: TEXT_UPPER = force uppercase, TEXT_FILENAME = restrict to alnum/_/-, TEXT_APPEND_MNL = append .MNL
+#define TEXT_UPPER       1
+#define TEXT_FILENAME    2
+#define TEXT_APPEND_MNL  4
+
+static bool text_entry_dialog(App* app, ApplicationContext* ctx, char* out_buf, int max_len,
+                              const char* prompt, const char* initial, int flags) {
+    // On-screen keyboard layout
+    static const char* osk_rows[] = {
+        "ABCDEFGHIJ",
+        "KLMNOPQRST",
+        "UVWXYZ0123",
+        "456789_-  ",
+    };
+    static const int OSK_ROWS = 4, OSK_COLS = 10;
+
+    char buf[128] = "";
     int len = 0;
+    if (initial && initial[0]) {
+        snprintf(buf, sizeof(buf), "%s", initial);
+        len = (int)strlen(buf);
+    }
+    if (len >= max_len - 1) len = max_len - 2;
+
+    int osk_row = 0, osk_col = 0;
+    bool using_osk = false; // activate osk on first gamepad input
     bool result = false;
+
     SDL_StartTextInput();
     for (;;) {
+        // --- Render ---
         SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
-        SDL_Rect bg = {140, 200, 360, 80};
+        SDL_Rect bg = {100, 150, 440, 180};
         SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 60, 255);
         SDL_RenderFillRect(ctx->renderer, &bg);
         SDL_SetRenderDrawColor(ctx->renderer, 255, 255, 255, 255);
         SDL_RenderDrawRect(ctx->renderer, &bg);
+
         SDL_Color white = {255, 255, 255, 255};
         SDL_Color yellow = {255, 255, 0, 255};
-        render_text(ctx->renderer, &app->font, 150, 210, white, prompt);
-        render_text(ctx->renderer, &app->font, 150, 230, yellow, buf);
-        render_text(ctx->renderer, &app->font, 150 + len * 8, 230, white, "_");
-        render_text(ctx->renderer, &app->font, 150, 260, white, "ENTER:OK  ESC:CANCEL");
+        SDL_Color gray = {120, 120, 120, 255};
+        SDL_Color cyan = {0, 255, 255, 255};
+
+        render_text(ctx->renderer, &app->font, 110, 158, white, prompt);
+        render_text(ctx->renderer, &app->font, 110, 176, yellow, buf);
+        render_text(ctx->renderer, &app->font, 110 + len * 8, 176, white, "_");
+
+        if (using_osk) {
+            // Draw on-screen keyboard grid
+            int osk_x = 140, osk_y = 196;
+            for (int r = 0; r < OSK_ROWS; r++) {
+                for (int c = 0; c < OSK_COLS && osk_rows[r][c]; c++) {
+                    char ch_str[2] = { osk_rows[r][c], 0 };
+                    if (ch_str[0] == ' ') continue;
+                    SDL_Color col = (r == osk_row && c == osk_col) ? cyan : gray;
+                    if (r == osk_row && c == osk_col) {
+                        SDL_SetRenderDrawColor(ctx->renderer, 0, 80, 80, 255);
+                        SDL_Rect hr = {osk_x + c * 16 - 1, osk_y + r * 16, 12, 14};
+                        SDL_RenderFillRect(ctx->renderer, &hr);
+                    }
+                    render_text(ctx->renderer, &app->font, osk_x + c * 16, osk_y + r * 16, col, ch_str);
+                }
+            }
+            render_text(ctx->renderer, &app->font, 310, 198, gray, "A:TYPE");
+            render_text(ctx->renderer, &app->font, 310, 214, gray, "B:DELETE");
+            render_text(ctx->renderer, &app->font, 310, 230, gray, "START:OK");
+            render_text(ctx->renderer, &app->font, 310, 246, gray, "BACK:CANCEL");
+        } else {
+            render_text(ctx->renderer, &app->font, 110, 310, gray, "ENTER:OK  ESC:CANCEL");
+        }
+
         SDL_SetRenderTarget(ctx->renderer, NULL);
         context_present(ctx);
 
+        // --- Input ---
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) { SDL_StopTextInput(); return false; }
-            if (e.type == SDL_KEYDOWN) {
+
+            // Keyboard input
+            if (e.type == SDL_KEYDOWN && !e.key.repeat) {
                 if (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER) {
                     if (len > 0) { result = true; goto done; }
                 }
@@ -1739,29 +1800,82 @@ static bool editor_name_dialog(App* app, ApplicationContext* ctx, char* out_name
             if (e.type == SDL_TEXTINPUT && len < max_len - 1) {
                 for (const char* p = e.text.text; *p && len < max_len - 1; p++) {
                     char c = *p;
-                    // Allow alphanumeric and some chars
-                    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-') {
-                        // Force uppercase
-                        if (c >= 'a' && c <= 'z') c -= 32;
-                        buf[len++] = c;
+                    if (flags & TEXT_FILENAME) {
+                        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                              (c >= '0' && c <= '9') || c == '_' || c == '-')) continue;
+                    } else {
+                        if (c < 32 || c > 126) continue;
+                    }
+                    if (flags & TEXT_UPPER) { if (c >= 'a' && c <= 'z') c -= 32; }
+                    buf[len++] = c;
+                    buf[len] = '\0';
+                }
+            }
+
+            // Gamepad input (any player's pad)
+            if (e.type == SDL_CONTROLLERBUTTONDOWN) {
+                using_osk = true;
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) osk_row = (osk_row + OSK_ROWS - 1) % OSK_ROWS;
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) osk_row = (osk_row + 1) % OSK_ROWS;
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) osk_col = (osk_col + OSK_COLS - 1) % OSK_COLS;
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) osk_col = (osk_col + 1) % OSK_COLS;
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A) {
+                    // Insert selected character
+                    char ch = osk_rows[osk_row][osk_col];
+                    if (ch != ' ' && len < max_len - 1) {
+                        buf[len++] = ch;
                         buf[len] = '\0';
                     }
                 }
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_B) {
+                    if (len > 0) buf[--len] = '\0';
+                }
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
+                    if (len > 0) { result = true; goto done; }
+                }
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) goto done;
             }
+            // Left analog stick for OSK navigation
+            if (e.type == SDL_CONTROLLERAXISMOTION) {
+                int state = 0;
+                if (e.caxis.value < -16000) state = -1;
+                else if (e.caxis.value > 16000) state = 1;
+                if (state != 0) {
+                    using_osk = true;
+                    if (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                        if (state < 0) osk_row = (osk_row + OSK_ROWS - 1) % OSK_ROWS;
+                        else osk_row = (osk_row + 1) % OSK_ROWS;
+                    } else if (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) {
+                        if (state < 0) osk_col = (osk_col + OSK_COLS - 1) % OSK_COLS;
+                        else osk_col = (osk_col + 1) % OSK_COLS;
+                    }
+                }
+            }
+        }
+        // Skip over blank cells
+        while (osk_rows[osk_row][osk_col] == ' ') {
+            osk_col = (osk_col + 1) % OSK_COLS;
+            if (osk_col == 0) osk_row = (osk_row + 1) % OSK_ROWS;
         }
         SDL_Delay(16);
     }
 done:
     SDL_StopTextInput();
     if (result) {
-        // Append .MNL extension if not present
-        snprintf(out_name, max_len, "%s", buf);
-        if (!strstr(out_name, ".MNL") && !strstr(out_name, ".mnl")) {
-            int slen = (int)strlen(out_name);
-            if (slen + 4 < max_len) strcat(out_name, ".MNL");
+        snprintf(out_buf, max_len, "%s", buf);
+        if (flags & TEXT_APPEND_MNL) {
+            if (!strstr(out_buf, ".MNL") && !strstr(out_buf, ".mnl")) {
+                int slen = (int)strlen(out_buf);
+                if (slen + 4 < max_len) strcat(out_buf, ".MNL");
+            }
         }
     }
     return result;
+}
+
+// Wrappers for specific contexts
+static bool editor_name_dialog(App* app, ApplicationContext* ctx, char* out_name, int max_len, const char* prompt) {
+    return text_entry_dialog(app, ctx, out_name, max_len, prompt, NULL, TEXT_UPPER | TEXT_FILENAME | TEXT_APPEND_MNL);
 }
 
 // File browser for loading levels
@@ -1785,12 +1899,14 @@ static bool editor_file_browser(App* app, ApplicationContext* ctx, char* out_nam
     if (count == 0) return false;
 
     int selected = 0, scroll = 0;
+    int axis_y_state = 0;
     for (;;) {
         SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
         SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 40, 255);
         SDL_RenderClear(ctx->renderer);
         SDL_Color white = {255, 255, 255, 255};
         SDL_Color yellow = {255, 255, 0, 255};
+        SDL_Color gray = {120, 120, 120, 255};
         render_text(ctx->renderer, &app->font, 240, 10, white, "LOAD LEVEL");
         int visible = 25;
         if (selected < scroll) scroll = selected;
@@ -1801,7 +1917,7 @@ static bool editor_file_browser(App* app, ApplicationContext* ctx, char* out_nam
             render_text(ctx->renderer, &app->font, 50, y, (idx == selected) ? yellow : white, files[idx]);
             if (idx == selected) render_text(ctx->renderer, &app->font, 30, y, yellow, ">");
         }
-        render_text(ctx->renderer, &app->font, 50, 440, white, "UP/DOWN:BROWSE  ENTER:LOAD  ESC:CANCEL");
+        render_text(ctx->renderer, &app->font, 50, 440, gray, "UP/DOWN:BROWSE  ENTER/A:LOAD  ESC/B:CANCEL");
         char cinfo[32];
         snprintf(cinfo, sizeof(cinfo), "%d FILES", count);
         render_text(ctx->renderer, &app->font, 450, 10, white, cinfo);
@@ -1822,6 +1938,29 @@ static bool editor_file_browser(App* app, ApplicationContext* ctx, char* out_nam
                         return true;
                     }
                     else if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) return false;
+                }
+                if (e.type == SDL_CONTROLLERBUTTONDOWN) {
+                    got_input = true;
+                    if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) selected = (selected + count - 1) % count;
+                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) selected = (selected + 1) % count;
+                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A) {
+                        snprintf(out_name, max_len, "%s", files[selected]);
+                        return true;
+                    }
+                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_B || e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) return false;
+                }
+                if (e.type == SDL_CONTROLLERAXISMOTION && e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                    int state = 0;
+                    if (e.caxis.value < -16000) state = -1;
+                    else if (e.caxis.value > 16000) state = 1;
+                    if (state != axis_y_state) {
+                        axis_y_state = state;
+                        if (state != 0) {
+                            got_input = true;
+                            if (state < 0) selected = (selected + count - 1) % count;
+                            else selected = (selected + 1) % count;
+                        }
+                    }
                 }
             }
             SDL_Delay(16);
@@ -1907,9 +2046,21 @@ static void app_run_editor(App* app, ApplicationContext* ctx) {
                         break;
                     }
                     case PAUSE_ED_SAVE:
+                        if (strcmp(filename, "NEWLEVEL.MNL") == 0) {
+                            char nn[64];
+                            if (editor_name_dialog(app, ctx, nn, sizeof(nn), "SAVE AS (ENTER NAME):"))
+                                snprintf(filename, sizeof(filename), "%s", nn);
+                            else break;
+                        }
                         if (editor_save_level(tiles, ctx->game_dir, filename)) modified = false;
                         break;
                     case PAUSE_ED_SAVE_QUIT:
+                        if (strcmp(filename, "NEWLEVEL.MNL") == 0) {
+                            char nn[64];
+                            if (editor_name_dialog(app, ctx, nn, sizeof(nn), "SAVE AS (ENTER NAME):"))
+                                snprintf(filename, sizeof(filename), "%s", nn);
+                            else break;
+                        }
                         if (editor_save_level(tiles, ctx->game_dir, filename)) modified = false;
                         running = false;
                         break;
@@ -2116,10 +2267,6 @@ static void app_run_editor(App* app, ApplicationContext* ctx) {
                         case ACT_REMOTE: {
                             // Cycle left tile forward
                             left_idx = (left_idx + 1) % EDITOR_TILE_COUNT; need_redraw = true; break;
-                        }
-                        case ACT_GOD: {
-                            // Cycle right tile forward
-                            right_idx = (right_idx + 1) % EDITOR_TILE_COUNT; need_redraw = true; break;
                         }
                         default: break;
                     }
@@ -2426,60 +2573,20 @@ static void ps_clear_arrow(App* app __attribute__((unused)), ApplicationContext*
 
 // Edit/create a player name at roster index. Returns true if name was entered.
 static bool ps_edit_name(App* app, ApplicationContext* ctx, int roster_idx) {
-    int x = PS_RIGHT_X + 2;
-    int y = PS_RIGHT_Y + roster_idx * 8 + 1;
     char name[ROSTER_NAME_MAX] = "";
-    int cursor = 0;
-
-    SDL_StartTextInput();
-    bool done = false;
-    while (!done) {
-        SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
-        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
-        SDL_Rect r = {x, y, 193, 8};
-        SDL_RenderFillRect(ctx->renderer, &r);
-        render_text(ctx->renderer, &app->font, x, y, app->select_players.palette[1], name);
-        if (cursor < 24) {
-            SDL_SetRenderDrawColor(ctx->renderer, app->select_players.palette[8].r,
-                                   app->select_players.palette[8].g, app->select_players.palette[8].b, 255);
-            SDL_Rect cur_r = {x + 1 + 8 * cursor, y + 6, 8, 2};
-            SDL_RenderFillRect(ctx->renderer, &cur_r);
-        }
-        SDL_SetRenderTarget(ctx->renderer, NULL);
-        context_present(ctx);
-
-        SDL_Event e;
-        while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_QUIT) { SDL_StopTextInput(); return false; }
-            if (e.type == SDL_KEYDOWN) {
-                if (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER
-                    || e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
-                    done = true; break;
-                }
-                if ((e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE || e.key.keysym.scancode == SDL_SCANCODE_DELETE) && cursor > 0) {
-                    name[--cursor] = '\0';
-                }
-            }
-            if (e.type == SDL_TEXTINPUT && cursor < 24) {
-                char ch = e.text.text[0];
-                if (ch >= 32 && ch < 127) {
-                    name[cursor++] = ch;
-                    name[cursor] = '\0';
-                }
-            }
-        }
-        SDL_Delay(16);
-    }
-    SDL_StopTextInput();
-
-    if (cursor > 0) {
-        RosterInfo* entry = &app->roster.entries[roster_idx];
-        memset(entry, 0, sizeof(RosterInfo));
-        entry->active = true;
-        snprintf(entry->name, ROSTER_NAME_MAX, "%s", name);
-    }
+    if (!text_entry_dialog(app, ctx, name, ROSTER_NAME_MAX, "ENTER PLAYER NAME:", NULL, TEXT_UPPER))
+        return false;
+    if (name[0] == '\0') return false;
+    RosterInfo* entry = &app->roster.entries[roster_idx];
+    memset(entry, 0, sizeof(RosterInfo));
+    entry->active = true;
+    snprintf(entry->name, ROSTER_NAME_MAX, "%s", name);
+    // Redraw the player select background since text_entry_dialog drew over it
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    SDL_RenderCopy(ctx->renderer, app->select_players.texture, NULL, NULL);
+    SDL_SetRenderTarget(ctx->renderer, NULL);
     ps_render_right_pane(app, ctx);
-    return cursor > 0;
+    return true;
 }
 
 // Name select sub-menu: browse 32 roster slots, select or create
@@ -2492,17 +2599,21 @@ static int ps_name_select(App* app, ApplicationContext* ctx) {
 
     int result = -1;
     bool running = true;
+    int axis_y_state = 0;
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) { running = false; break; }
+
+            int prev = arrow;
+            bool nav = false; // did arrow move?
+
             if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-                int prev = arrow;
                 switch (e.key.keysym.scancode) {
                     case SDL_SCANCODE_DOWN: case SDL_SCANCODE_KP_2:
-                        arrow = (arrow + 1) % ROSTER_MAX; break;
+                        arrow = (arrow + 1) % ROSTER_MAX; nav = true; break;
                     case SDL_SCANCODE_UP: case SDL_SCANCODE_KP_8:
-                        arrow = (arrow + ROSTER_MAX - 1) % ROSTER_MAX; break;
+                        arrow = (arrow + ROSTER_MAX - 1) % ROSTER_MAX; nav = true; break;
                     case SDL_SCANCODE_LEFT: case SDL_SCANCODE_KP_4:
                         if (app->roster.entries[arrow].active) result = arrow;
                         running = false; break;
@@ -2510,7 +2621,6 @@ static int ps_name_select(App* app, ApplicationContext* ctx) {
                         running = false; break;
                     case SDL_SCANCODE_BACKSPACE: case SDL_SCANCODE_DELETE:
                         app->roster.entries[arrow].active = false;
-                        // Clear any identities pointing here
                         for (int i = 0; i < MAX_PLAYERS; i++)
                             if (app->roster.identities[i] == arrow) app->roster.identities[i] = -1;
                         ps_render_right_pane(app, ctx);
@@ -2520,20 +2630,65 @@ static int ps_name_select(App* app, ApplicationContext* ctx) {
                     case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER:
                         ps_edit_name(app, ctx, arrow);
                         if (app->roster.entries[arrow].active) { result = arrow; running = false; }
+                        ps_render_arrow(app, ctx, arrow);
+                        ps_render_stats(app, ctx, app->roster.entries[arrow].active ? &app->roster.entries[arrow] : NULL);
+                        context_present(ctx);
                         break;
                     default: break;
                 }
-                if (prev != arrow && running) {
-                    ps_clear_arrow(app, ctx, prev);
+            }
+            // Gamepad buttons
+            if (e.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) { arrow = (arrow + 1) % ROSTER_MAX; nav = true; }
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) { arrow = (arrow + ROSTER_MAX - 1) % ROSTER_MAX; nav = true; }
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_B || e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) {
+                    if (app->roster.entries[arrow].active) result = arrow;
+                    running = false;
+                }
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) { running = false; }
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_X) {
+                    // X = delete entry
+                    app->roster.entries[arrow].active = false;
+                    for (int i = 0; i < MAX_PLAYERS; i++)
+                        if (app->roster.identities[i] == arrow) app->roster.identities[i] = -1;
+                    ps_render_right_pane(app, ctx);
+                    ps_render_stats(app, ctx, NULL);
+                    context_present(ctx);
+                }
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A) {
+                    // A = edit/create name
+                    ps_edit_name(app, ctx, arrow);
+                    if (app->roster.entries[arrow].active) { result = arrow; running = false; }
                     ps_render_arrow(app, ctx, arrow);
                     ps_render_stats(app, ctx, app->roster.entries[arrow].active ? &app->roster.entries[arrow] : NULL);
                     context_present(ctx);
                 }
             }
+            // Left analog Y for scrolling roster
+            if (e.type == SDL_CONTROLLERAXISMOTION && e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                int state = 0;
+                if (e.caxis.value < -16000) state = -1;
+                else if (e.caxis.value > 16000) state = 1;
+                if (state != axis_y_state) {
+                    axis_y_state = state;
+                    if (state < 0) { arrow = (arrow + ROSTER_MAX - 1) % ROSTER_MAX; nav = true; }
+                    else if (state > 0) { arrow = (arrow + 1) % ROSTER_MAX; nav = true; }
+                }
+            }
+
             if (e.type == SDL_TEXTINPUT) {
-                // Start editing new name
                 ps_edit_name(app, ctx, arrow);
                 if (app->roster.entries[arrow].active) { result = arrow; running = false; }
+                ps_render_arrow(app, ctx, arrow);
+                ps_render_stats(app, ctx, app->roster.entries[arrow].active ? &app->roster.entries[arrow] : NULL);
+                context_present(ctx);
+            }
+
+            if (nav && prev != arrow && running) {
+                ps_clear_arrow(app, ctx, prev);
+                ps_render_arrow(app, ctx, arrow);
+                ps_render_stats(app, ctx, app->roster.entries[arrow].active ? &app->roster.entries[arrow] : NULL);
+                context_present(ctx);
             }
         }
         SDL_Delay(16);
@@ -2575,54 +2730,73 @@ static bool app_run_player_select(App* app, ApplicationContext* ctx) {
 
     bool result = false;
     bool running = true;
+    int axis_y_state = 0;
+
+    // Helper: advance active down, skipping unused player slots
+    #define PS_MOVE_DOWN() do { active++; \
+        if (active > 4) active = 0; \
+        else if (active != 4 && active >= num_players) active = 4; } while(0)
+    #define PS_MOVE_UP() do { \
+        if (active == 0) active = 4; \
+        else { active--; if (active >= num_players) active = num_players - 1; } } while(0)
+    #define PS_CONFIRM() do { \
+        if (active == 4) { \
+            bool all_ok = true; \
+            for (int i = 0; i < num_players; i++) \
+                if (app->roster.identities[i] < 0) { all_ok = false; break; } \
+            if (all_ok) { result = true; running = false; } \
+        } else { \
+            int sel = ps_name_select(app, ctx); \
+            if (sel >= 0) app->roster.identities[active] = (int8_t)sel; \
+            ps_render_left_names(app, ctx, num_players); \
+        } } while(0)
+
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) { running = false; break; }
+
+            int prev = active;
+
             if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-                int prev = active;
                 switch (e.key.keysym.scancode) {
-                    case SDL_SCANCODE_DOWN: case SDL_SCANCODE_KP_2:
-                        active++;
-                        if (active > 4) active = 0;
-                        else if (active != 4 && active >= num_players) active = 4;
-                        break;
-                    case SDL_SCANCODE_UP: case SDL_SCANCODE_KP_8:
-                        if (active == 0) active = 4;
-                        else { active--; if (active >= num_players) active = num_players - 1; }
-                        break;
-                    case SDL_SCANCODE_F10:
-                        running = false; break;
-                    case SDL_SCANCODE_ESCAPE:
-                        running = false; break;
+                    case SDL_SCANCODE_DOWN: case SDL_SCANCODE_KP_2: PS_MOVE_DOWN(); break;
+                    case SDL_SCANCODE_UP: case SDL_SCANCODE_KP_8: PS_MOVE_UP(); break;
+                    case SDL_SCANCODE_F10: case SDL_SCANCODE_ESCAPE: running = false; break;
                     case SDL_SCANCODE_RETURN: case SDL_SCANCODE_KP_ENTER:
-                    case SDL_SCANCODE_RIGHT: case SDL_SCANCODE_KP_6: {
-                        if (active == 4) {
-                            // Check all selected
-                            bool all_ok = true;
-                            for (int i = 0; i < num_players; i++)
-                                if (app->roster.identities[i] < 0) { all_ok = false; break; }
-                            if (all_ok) { result = true; running = false; }
-                        } else {
-                            int sel = ps_name_select(app, ctx);
-                            if (sel >= 0) app->roster.identities[active] = (int8_t)sel;
-                            ps_render_left_names(app, ctx, num_players);
-                        }
-                        break;
-                    }
+                    case SDL_SCANCODE_RIGHT: case SDL_SCANCODE_KP_6: PS_CONFIRM(); break;
                     default: break;
                 }
-                if (prev != active) {
-                    ps_render_shovel(app, ctx, prev, active);
-                    const RosterInfo* st = NULL;
-                    if (active < 4 && app->roster.identities[active] >= 0)
-                        st = &app->roster.entries[app->roster.identities[active]];
-                    ps_render_stats(app, ctx, st);
-                }
-                context_present(ctx);
             }
+            // Gamepad
+            if (e.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) PS_MOVE_DOWN();
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) PS_MOVE_UP();
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A || e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) PS_CONFIRM();
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_B || e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) running = false;
+            }
+            // Left analog Y
+            if (e.type == SDL_CONTROLLERAXISMOTION && e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+                int state = 0;
+                if (e.caxis.value < -16000) state = -1;
+                else if (e.caxis.value > 16000) state = 1;
+                if (state != axis_y_state) {
+                    axis_y_state = state;
+                    if (state < 0) PS_MOVE_UP();
+                    else if (state > 0) PS_MOVE_DOWN();
+                }
+            }
+
+            if (prev != active) {
+                ps_render_shovel(app, ctx, prev, active);
+                const RosterInfo* st = NULL;
+                if (active < 4 && app->roster.identities[active] >= 0)
+                    st = &app->roster.entries[app->roster.identities[active]];
+                ps_render_stats(app, ctx, st);
+            }
+            context_present(ctx);
+
             if (e.type == SDL_TEXTINPUT && active < 4) {
-                // Find empty slot and start editing
                 int empty = -1;
                 for (int i = 0; i < ROSTER_MAX; i++)
                     if (!app->roster.entries[i].active) { empty = i; break; }
@@ -2636,6 +2810,9 @@ static bool app_run_player_select(App* app, ApplicationContext* ctx) {
         }
         SDL_Delay(16);
     }
+    #undef PS_MOVE_DOWN
+    #undef PS_MOVE_UP
+    #undef PS_CONFIRM
 
     // Copy selected names to player_name slots
     for (int i = 0; i < num_players; i++) {
@@ -3515,6 +3692,7 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
                 else if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F1) { entering_debug = true; debug_func = app_run_netgame; navigating = false; }
 #endif
                 else if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F2) { entering_debug = true; debug_func = app_run_editor; navigating = false; }
+                else if (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) { entering_debug = true; debug_func = app_run_editor; navigating = false; }
             }
             SDL_Delay(1);
         }

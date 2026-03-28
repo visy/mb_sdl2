@@ -6,7 +6,7 @@
 
 static const char* action_names[] = {
     "UP", "DOWN", "LEFT", "RIGHT",
-    "STOP", "ACTION", "CYCLE", "REMOTE", "GOD", "PAUSE"
+    "STOP", "ACTION", "CYCLE", "REMOTE", "PAUSE"
 };
 
 static void set_default_pad_bindings(PlayerInputConfig* p) {
@@ -48,51 +48,49 @@ void input_get_default(InputConfig* config) {
     memset(config, 0, sizeof(InputConfig));
     for (int i = 0; i < 4; i++) config->pad_id[i] = -1;
 
-    // Player 1 Defaults
-    config->p[0].bindings[ACT_UP][0] = (Binding){BIND_KEY, SDL_SCANCODE_UP, 0};
-    config->p[0].bindings[ACT_DOWN][0] = (Binding){BIND_KEY, SDL_SCANCODE_DOWN, 0};
-    config->p[0].bindings[ACT_LEFT][0] = (Binding){BIND_KEY, SDL_SCANCODE_LEFT, 0};
-    config->p[0].bindings[ACT_RIGHT][0] = (Binding){BIND_KEY, SDL_SCANCODE_RIGHT, 0};
-    config->p[0].bindings[ACT_STOP][0] = (Binding){BIND_KEY, SDL_SCANCODE_X, 0};
-    config->p[0].bindings[ACT_ACTION][0] = (Binding){BIND_KEY, SDL_SCANCODE_Z, 0};
-    config->p[0].bindings[ACT_CYCLE][0] = (Binding){BIND_KEY, SDL_SCANCODE_A, 0};
-    config->p[0].bindings[ACT_REMOTE][0] = (Binding){BIND_KEY, SDL_SCANCODE_S, 0};
-    config->p[0].bindings[ACT_GOD][0] = (Binding){BIND_KEY, SDL_SCANCODE_P, 0};
-    config->p[0].bindings[ACT_GOD][1] = (Binding){BIND_BTN, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 0};
-    config->p[0].bindings[ACT_PAUSE][0] = (Binding){BIND_KEY, SDL_SCANCODE_ESCAPE, 0};
-    config->p[0].bindings[ACT_PAUSE][1] = (Binding){BIND_KEY, SDL_SCANCODE_F10, 0};
+    // Player 1: WASD cluster
+    config->p[0].bindings[ACT_UP][0]     = (Binding){BIND_KEY, SDL_SCANCODE_W, 0};
+    config->p[0].bindings[ACT_DOWN][0]   = (Binding){BIND_KEY, SDL_SCANCODE_S, 0};
+    config->p[0].bindings[ACT_LEFT][0]   = (Binding){BIND_KEY, SDL_SCANCODE_A, 0};
+    config->p[0].bindings[ACT_RIGHT][0]  = (Binding){BIND_KEY, SDL_SCANCODE_D, 0};
+    config->p[0].bindings[ACT_ACTION][0] = (Binding){BIND_KEY, SDL_SCANCODE_LSHIFT, 0};
+    config->p[0].bindings[ACT_STOP][0]   = (Binding){BIND_KEY, SDL_SCANCODE_LCTRL, 0};
+    config->p[0].bindings[ACT_CYCLE][0]  = (Binding){BIND_KEY, SDL_SCANCODE_Q, 0};
+    config->p[0].bindings[ACT_REMOTE][0] = (Binding){BIND_KEY, SDL_SCANCODE_E, 0};
+    config->p[0].bindings[ACT_PAUSE][0]  = (Binding){BIND_KEY, SDL_SCANCODE_ESCAPE, 0};
+    config->p[0].bindings[ACT_PAUSE][1]  = (Binding){BIND_KEY, SDL_SCANCODE_F10, 0};
 
-    // Player 2 Defaults
-    config->p[1].bindings[ACT_UP][0] = (Binding){BIND_KEY, SDL_SCANCODE_I, 0};
-    config->p[1].bindings[ACT_DOWN][0] = (Binding){BIND_KEY, SDL_SCANCODE_K, 0};
-    config->p[1].bindings[ACT_LEFT][0] = (Binding){BIND_KEY, SDL_SCANCODE_J, 0};
-    config->p[1].bindings[ACT_RIGHT][0] = (Binding){BIND_KEY, SDL_SCANCODE_L, 0};
-    config->p[1].bindings[ACT_STOP][0] = (Binding){BIND_KEY, SDL_SCANCODE_6, 0};
-    config->p[1].bindings[ACT_ACTION][0] = (Binding){BIND_KEY, SDL_SCANCODE_5, 0};
-    config->p[1].bindings[ACT_CYCLE][0] = (Binding){BIND_KEY, SDL_SCANCODE_7, 0};
-    config->p[1].bindings[ACT_REMOTE][0] = (Binding){BIND_KEY, SDL_SCANCODE_8, 0};
+    // Player 2: TFGH cluster
+    config->p[1].bindings[ACT_UP][0]     = (Binding){BIND_KEY, SDL_SCANCODE_T, 0};
+    config->p[1].bindings[ACT_DOWN][0]   = (Binding){BIND_KEY, SDL_SCANCODE_G, 0};
+    config->p[1].bindings[ACT_LEFT][0]   = (Binding){BIND_KEY, SDL_SCANCODE_F, 0};
+    config->p[1].bindings[ACT_RIGHT][0]  = (Binding){BIND_KEY, SDL_SCANCODE_H, 0};
+    config->p[1].bindings[ACT_ACTION][0] = (Binding){BIND_KEY, SDL_SCANCODE_R, 0};
+    config->p[1].bindings[ACT_STOP][0]   = (Binding){BIND_KEY, SDL_SCANCODE_Y, 0};
+    config->p[1].bindings[ACT_CYCLE][0]  = (Binding){BIND_KEY, SDL_SCANCODE_V, 0};
+    config->p[1].bindings[ACT_REMOTE][0] = (Binding){BIND_KEY, SDL_SCANCODE_B, 0};
 
-    // Player 3 Defaults
-    config->p[2].bindings[ACT_UP][0] = (Binding){BIND_KEY, SDL_SCANCODE_T, 0};
-    config->p[2].bindings[ACT_DOWN][0] = (Binding){BIND_KEY, SDL_SCANCODE_G, 0};
-    config->p[2].bindings[ACT_LEFT][0] = (Binding){BIND_KEY, SDL_SCANCODE_F, 0};
-    config->p[2].bindings[ACT_RIGHT][0] = (Binding){BIND_KEY, SDL_SCANCODE_H, 0};
-    config->p[2].bindings[ACT_STOP][0] = (Binding){BIND_KEY, SDL_SCANCODE_V, 0};
-    config->p[2].bindings[ACT_ACTION][0] = (Binding){BIND_KEY, SDL_SCANCODE_C, 0};
-    config->p[2].bindings[ACT_CYCLE][0] = (Binding){BIND_KEY, SDL_SCANCODE_B, 0};
-    config->p[2].bindings[ACT_REMOTE][0] = (Binding){BIND_KEY, SDL_SCANCODE_N, 0};
+    // Player 3: IJKL cluster
+    config->p[2].bindings[ACT_UP][0]     = (Binding){BIND_KEY, SDL_SCANCODE_I, 0};
+    config->p[2].bindings[ACT_DOWN][0]   = (Binding){BIND_KEY, SDL_SCANCODE_K, 0};
+    config->p[2].bindings[ACT_LEFT][0]   = (Binding){BIND_KEY, SDL_SCANCODE_J, 0};
+    config->p[2].bindings[ACT_RIGHT][0]  = (Binding){BIND_KEY, SDL_SCANCODE_L, 0};
+    config->p[2].bindings[ACT_ACTION][0] = (Binding){BIND_KEY, SDL_SCANCODE_U, 0};
+    config->p[2].bindings[ACT_STOP][0]   = (Binding){BIND_KEY, SDL_SCANCODE_O, 0};
+    config->p[2].bindings[ACT_CYCLE][0]  = (Binding){BIND_KEY, SDL_SCANCODE_N, 0};
+    config->p[2].bindings[ACT_REMOTE][0] = (Binding){BIND_KEY, SDL_SCANCODE_M, 0};
 
-    // Player 4 Defaults
-    config->p[3].bindings[ACT_UP][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_8, 0};
-    config->p[3].bindings[ACT_DOWN][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_5, 0};
-    config->p[3].bindings[ACT_LEFT][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_4, 0};
-    config->p[3].bindings[ACT_RIGHT][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_6, 0};
-    config->p[3].bindings[ACT_STOP][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_2, 0};
-    config->p[3].bindings[ACT_ACTION][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_1, 0};
-    config->p[3].bindings[ACT_CYCLE][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_3, 0};
-    config->p[3].bindings[ACT_REMOTE][0] = (Binding){BIND_KEY, SDL_SCANCODE_KP_0, 0};
+    // Player 4: Arrow keys cluster
+    config->p[3].bindings[ACT_UP][0]     = (Binding){BIND_KEY, SDL_SCANCODE_UP, 0};
+    config->p[3].bindings[ACT_DOWN][0]   = (Binding){BIND_KEY, SDL_SCANCODE_DOWN, 0};
+    config->p[3].bindings[ACT_LEFT][0]   = (Binding){BIND_KEY, SDL_SCANCODE_LEFT, 0};
+    config->p[3].bindings[ACT_RIGHT][0]  = (Binding){BIND_KEY, SDL_SCANCODE_RIGHT, 0};
+    config->p[3].bindings[ACT_ACTION][0] = (Binding){BIND_KEY, SDL_SCANCODE_RCTRL, 0};
+    config->p[3].bindings[ACT_STOP][0]   = (Binding){BIND_KEY, SDL_SCANCODE_RSHIFT, 0};
+    config->p[3].bindings[ACT_CYCLE][0]  = (Binding){BIND_KEY, SDL_SCANCODE_COMMA, 0};
+    config->p[3].bindings[ACT_REMOTE][0] = (Binding){BIND_KEY, SDL_SCANCODE_PERIOD, 0};
 
-    // Add default gamepad bindings for all players
+    // Add default gamepad bindings for all players (dpad + left stick + ABXY + start)
     for (int i = 0; i < 4; i++) set_default_pad_bindings(&config->p[i]);
 }
 
@@ -157,6 +155,19 @@ bool input_load_config(InputConfig* config, const char* filename) {
         }
     }
     fclose(f);
+
+    // Ensure ACT_PAUSE always has bindings (may be missing from older config files)
+    if (config->p[0].bindings[ACT_PAUSE][0].type == BIND_NONE) {
+        config->p[0].bindings[ACT_PAUSE][0] = (Binding){BIND_KEY, SDL_SCANCODE_ESCAPE, 0};
+        config->p[0].bindings[ACT_PAUSE][1] = (Binding){BIND_KEY, SDL_SCANCODE_F10, 0};
+    }
+    for (int i = 0; i < 4; i++) {
+        int b;
+        for (b = 0; b < MAX_BINDINGS && config->p[i].bindings[ACT_PAUSE][b].type != BIND_NONE; b++);
+        if (b < MAX_BINDINGS)
+            config->p[i].bindings[ACT_PAUSE][b] = (Binding){BIND_BTN, SDL_CONTROLLER_BUTTON_START, 0};
+    }
+
     return true;
 }
 

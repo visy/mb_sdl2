@@ -218,7 +218,6 @@ static void explode_bomb(World* world, int cx, int cy);
 static void apply_explosion_damage(World* world, int cx, int cy, int dmg) {
     for (int i = 0; i < world->num_actors; ++i) {
         Actor* actor = &world->actors[i];
-        if (i == 0 && world->god_mode) continue;
         if (actor->is_dead) continue;
         int px = actor->pos.x / 10;
         int py = (actor->pos.y - 30) / 10;
@@ -795,7 +794,6 @@ void game_init_world(World* world, uint8_t* level_data, int num_players) {
             world->actors[3].pos.x = 15;  world->actors[3].pos.y = 465; world->actors[3].facing = DIR_RIGHT;
         }
     }
-    world->god_mode = false;
 }
 
 static void randomize_exits(World* world) {
@@ -933,7 +931,6 @@ static void monster_damage_players(World* world, int actor_idx) {
     for (int p = 0; p < world->num_players; p++) {
         Actor* player = &world->actors[p];
         if (player->is_dead) continue;
-        if (p == 0 && world->god_mode) continue;
         // Clone doesn't hurt its owner (or anyone in campaign mode)
         if (monster->kind == ACTOR_CLONE && (monster->clone_owner == p || world->campaign_mode)) continue;
         int pcx = player->pos.x / 10;
@@ -1426,7 +1423,7 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
     SDL_RenderCopy(ctx->renderer, app->players.texture, NULL, NULL);
 
     // Black out unused player slots
-    SDL_Color yellow = {255, 255, 0, 255}, white = {255, 255, 255, 255}, cyan = {0, 255, 255, 255};
+    SDL_Color yellow = {255, 255, 0, 255}, cyan = {0, 255, 255, 255};
     static const int PLAYER_X[] = {12, 174, 337, 500};
     static const int HEALTH_BAR_LEFT[] = {142, 304, 467, 630};
     if (world->num_players < 4) {
@@ -1474,10 +1471,6 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
             SDL_Rect r_full = {left, 28 - health_bars, 8, health_bars};
             SDL_RenderFillRect(ctx->renderer, &r_full);
         }
-    }
-
-    if (world->god_mode) {
-        render_text(ctx->renderer, &app->font, 12 + 70, 2, white, "GOD MODE ON");
     }
 
     if (world->campaign_mode) {
@@ -1747,7 +1740,6 @@ static void apply_game_remote(World* world, int p) {
 // Shared input application: takes packed input flags and applies to actor/world.
 // Input flag format matches NET_INPUT_* constants (direction in low 3 bits, actions in higher bits).
 static void apply_player_input(App* app, World* world, int p, uint8_t input) {
-    if (input & NET_INPUT_GOD) world->god_mode = !world->god_mode;
     Actor* actor = &world->actors[p];
     if (!actor->is_dead) {
         int dir = input & NET_INPUT_DIR_MASK;
@@ -1773,7 +1765,6 @@ static uint8_t action_to_input_flag(ActionType act) {
         case ACT_ACTION: return NET_INPUT_ACTION;
         case ACT_CYCLE:  return NET_INPUT_CYCLE;
         case ACT_REMOTE: return NET_INPUT_REMOTE;
-        case ACT_GOD:    return NET_INPUT_GOD;
         default:         return 0;
     }
 }
