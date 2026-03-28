@@ -187,6 +187,149 @@ static void roster_update_stats(RosterInfo* dest, const GameStats* src, bool tou
     dest->history[hist_idx] = hval;
 }
 
+// --- Pause Menu ---
+// Check if event is a pause trigger (ACT_PAUSE from any player)
+bool is_pause_event(const SDL_Event* e, InputConfig* config) {
+    for (int p = 0; p < 4; p++) {
+        ActionType act = input_map_event(e, p, config);
+        if (act == ACT_PAUSE) return true;
+    }
+    return false;
+}
+
+// Internal pause menu with optional network keepalive.
+static PauseChoice pause_menu_impl(App* app, ApplicationContext* ctx, PauseContext pctx, NetContext* net) {
+    const char* items[8];
+    PauseChoice values[8];
+    int count = 0;
+
+    switch (pctx) {
+        case PAUSE_CTX_GAMEPLAY:
+            items[count] = "EXIT LEVEL";    values[count++] = PAUSE_EXIT_LEVEL;
+            items[count] = "END GAME";      values[count++] = PAUSE_END_GAME;
+            break;
+        case PAUSE_CTX_SHOP:
+            items[count] = "END GAME";      values[count++] = PAUSE_END_GAME;
+            break;
+        case PAUSE_CTX_MAINMENU:
+            items[count] = "EDITOR";        values[count++] = PAUSE_EDITOR;
+            break;
+        case PAUSE_CTX_EDITOR:
+            items[count] = "NEW LEVEL";     values[count++] = PAUSE_ED_NEW;
+            items[count] = "LOAD LEVEL";    values[count++] = PAUSE_ED_LOAD;
+            items[count] = "SAVE";          values[count++] = PAUSE_ED_SAVE;
+            items[count] = "SAVE & QUIT";   values[count++] = PAUSE_ED_SAVE_QUIT;
+            items[count] = "QUIT";          values[count++] = PAUSE_ED_QUIT;
+            break;
+    }
+
+    int selected = 0;
+    bool running = true;
+
+    // Compute menu box dimensions
+    int max_len = 0;
+    for (int i = 0; i < count; i++) {
+        int len = (int)strlen(items[i]);
+        if (len > max_len) max_len = len;
+    }
+    int char_w = 8, line_h = 18;
+    int box_w = max_len * char_w + 40;
+    int box_h = count * line_h + 24;
+    int box_x = (SCREEN_WIDTH - box_w) / 2;
+    int box_y = (SCREEN_HEIGHT - box_h) / 2;
+
+    // Snapshot the current buffer so we can redraw it each frame
+    SDL_Texture* snapshot = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888,
+        SDL_TEXTUREACCESS_TARGET, SCREEN_WIDTH, SCREEN_HEIGHT);
+    SDL_SetRenderTarget(ctx->renderer, snapshot);
+    SDL_RenderCopy(ctx->renderer, ctx->buffer, NULL, NULL);
+
+    SDL_Color white = {255, 255, 255, 255};
+    SDL_Color yellow = {255, 255, 0, 255};
+    SDL_Color gray = {160, 160, 160, 255};
+    PauseChoice result = PAUSE_NONE;
+
+    while (running) {
+        // Restore background from snapshot
+        SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+        SDL_RenderCopy(ctx->renderer, snapshot, NULL, NULL);
+
+        // Draw semi-transparent black background for the menu
+        SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 180);
+        SDL_Rect bg = {box_x - 4, box_y - 4, box_w + 8, box_h + 8};
+        SDL_RenderFillRect(ctx->renderer, &bg);
+
+        // Draw border
+        SDL_SetRenderDrawColor(ctx->renderer, 200, 200, 200, 255);
+        SDL_RenderDrawRect(ctx->renderer, &bg);
+
+        // Title
+        const char* title = "PAUSED";
+        int title_x = box_x + (box_w - (int)strlen(title) * char_w) / 2;
+        render_text(ctx->renderer, &app->font, title_x, box_y + 2, white, title);
+
+        // Items
+        for (int i = 0; i < count; i++) {
+            int ix = box_x + 20;
+            int iy = box_y + 22 + i * line_h;
+            SDL_Color col = (i == selected) ? yellow : gray;
+            if (i == selected) {
+                render_text(ctx->renderer, &app->font, ix - 12, iy, yellow, ">");
+            }
+            render_text(ctx->renderer, &app->font, ix, iy, col, items[i]);
+        }
+
+        SDL_SetRenderTarget(ctx->renderer, NULL);
+        context_present(ctx);
+
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) { result = PAUSE_END_GAME; running = false; break; }
+            if (e.type == SDL_KEYDOWN && e.key.repeat) continue;
+
+            // Check for pause button again = resume
+            if (is_pause_event(&e, &app->input_config)) {
+                running = false; break;
+            }
+
+            ActionType act = input_map_event(&e, 0, &app->input_config);
+            if (act == ACT_UP) { selected = (selected + count - 1) % count; }
+            else if (act == ACT_DOWN) { selected = (selected + 1) % count; }
+            else if (act == ACT_ACTION || (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER))) {
+                result = values[selected]; running = false; break;
+            }
+            else if (act == ACT_STOP) {
+                running = false; break; // B button = resume
+            }
+        }
+        // Service network to prevent timeout during pause
+#ifdef MB_NET
+        if (net && net->host) {
+            NetMessage nmsg; ENetPeer* npeer;
+            while (net_poll(net, &nmsg, &npeer) > 0) { /* drain keepalives */ }
+        }
+#else
+        (void)net;
+#endif
+        SDL_Delay(16);
+    }
+
+    // Restore buffer from snapshot
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    SDL_RenderCopy(ctx->renderer, snapshot, NULL, NULL);
+    SDL_DestroyTexture(snapshot);
+    return result;
+}
+
+PauseChoice pause_menu(App* app, ApplicationContext* ctx, PauseContext pctx) {
+    return pause_menu_impl(app, ctx, pctx, NULL);
+}
+
+PauseChoice pause_menu_net(App* app, ApplicationContext* ctx, PauseContext pctx, NetContext* net) {
+    return pause_menu_impl(app, ctx, pctx, net);
+}
+
 typedef enum {
     MENU_NEW_GAME,
     MENU_OPTIONS,
@@ -901,10 +1044,55 @@ static const uint32_t EQUIPMENT_PRICES[] = {
     1, 3, 10, 650, 15, 65, 300, 25, 500, 80, 90, 35, 145, 15, 80, 120, 50, 400, 1100, 1600, 70, 400, 50, 80, 800, 95, 575
 };
 
+// Single source of truth for end-of-round money distribution.
+// Handles campaign (1 player, never lose money) and multiplayer (any player count).
+static void app_process_round_result(App* app, const RoundResult* result, int nplayers, bool campaign) {
+    // Apply 7% interest on pre-round cash
+    for (int p = 0; p < nplayers; p++)
+        app->player_cash[p] = (107 * app->player_cash[p] + 50) / 100;
+
+    if (campaign) {
+        // Campaign: player always keeps all collected cash
+        app->player_cash[0] += result->player_cash_earned[0];
+    } else {
+        // Multiplayer: dead players' earnings go to a pool, alive players collect
+        int alive = 0;
+        for (int p = 0; p < nplayers; p++)
+            if (result->player_survived[p]) alive++;
+
+        uint32_t lost_money = 0;
+        for (int p = 0; p < nplayers; p++)
+            if (!result->player_survived[p]) lost_money += result->player_cash_earned[p];
+
+        if (alive == 1) lost_money += result->gold_remaining * 2 / 5;
+
+        for (int p = 0; p < nplayers; p++) {
+            if (result->player_survived[p] && alive > 0) {
+                app->player_cash[p] += lost_money / alive + result->player_cash_earned[p];
+                if (alive != nplayers) app->player_rounds_won[p]++;
+            }
+        }
+    }
+
+    // Cash floor: minimum 250 after interest (100 + 150 top-up)
+    for (int p = 0; p < nplayers; p++)
+        if (app->player_cash[p] < 100) app->player_cash[p] += 150;
+}
+
+static uint32_t shop_adjusted_price(App* app, int item) {
+    uint32_t base = EQUIPMENT_PRICES[item];
+    if (app->options.free_market) {
+        uint32_t pct = 130 - (uint32_t)(rand() % 60); // 70-130%
+        return ((base - 1) * pct + 50) / 100 + 1;
+    }
+    return base;
+}
+
 static bool shop_try_buy(App* app, int player, int item) {
     if (item < 0 || item >= EQUIP_TOTAL) return false;
-    if (app->player_cash[player] >= EQUIPMENT_PRICES[item]) {
-        app->player_cash[player] -= EQUIPMENT_PRICES[item];
+    uint32_t price = shop_adjusted_price(app, item);
+    if (app->player_cash[player] >= price) {
+        app->player_cash[player] -= price;
         app->player_inventory[player][item]++;
         return true;
     }
@@ -915,7 +1103,7 @@ static bool shop_try_sell(App* app, int player, int item) {
     if (item < 0 || item >= EQUIP_TOTAL) return false;
     if (app->player_inventory[player][item] > 0) {
         app->player_inventory[player][item]--;
-        app->player_cash[player] += EQUIPMENT_PRICES[item] / 2;
+        app->player_cash[player] += (7 * EQUIPMENT_PRICES[item] + 5) / 10;
         return true;
     }
     return false;
@@ -1092,7 +1280,11 @@ static bool app_run_shop_batch(App* app, ApplicationContext* ctx, int players[],
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) return false;
-            if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F10) return false;
+            if (is_pause_event(&e, &app->input_config)) {
+                PauseChoice pc = pause_menu(app, ctx, PAUSE_CTX_SHOP);
+                if (pc == PAUSE_END_GAME) return false;
+                continue;
+            }
             for (int panel = 0; panel < num_panels; ++panel) {
                 int pi = players[panel];
                 ActionType act = input_map_event(&e, pi, &app->input_config);
@@ -1151,14 +1343,7 @@ static void app_run_shop(App* app, ApplicationContext* ctx) {
             context_animate(ctx, ANIMATION_FADE_DOWN, 7);
             RoundResult result = game_run(app, ctx, app->level_data[lvl_idx], NULL);
 
-            int alive = 0;
-            for (int p = 0; p < nplayers; p++) if (result.player_survived[p]) alive++;
-            if (alive > 0 && alive < nplayers) {
-                for (int p = 0; p < nplayers; p++)
-                    if (result.player_survived[p]) app->player_rounds_won[p]++;
-            }
-            for (int p = 0; p < nplayers; p++)
-                if (app->player_cash[p] < 100) app->player_cash[p] += 150;
+            app_process_round_result(app, &result, nplayers, false);
 
             context_linger_music_start(ctx);
             context_animate(ctx, ANIMATION_FADE_DOWN, 7);
@@ -1270,87 +1455,6 @@ static const uint8_t EDITOR_TILES[] = {
 };
 #define EDITOR_TILE_COUNT (int)(sizeof(EDITOR_TILES) / sizeof(EDITOR_TILES[0]))
 
-static const char* editor_tile_name(uint8_t tile) {
-    switch (tile) {
-        case TILE_PASSAGE: return "PASSAGE";
-        case TILE_WALL: return "WALL";
-        case TILE_SAND1: return "SAND 1";
-        case TILE_SAND2: return "SAND 2";
-        case TILE_SAND3: return "SAND 3";
-        case TILE_GRAVEL_LIGHT: return "GRAVEL LIGHT";
-        case TILE_GRAVEL_HEAVY: return "GRAVEL HEAVY";
-        case TILE_STONE_TOP_LEFT: return "STONE TL";
-        case TILE_STONE_TOP_RIGHT: return "STONE TR";
-        case TILE_STONE_BOTTOM_RIGHT: return "STONE BR";
-        case TILE_STONE_BOTTOM_LEFT: return "STONE BL";
-        case TILE_BOULDER: return "BOULDER";
-        case TILE_STONE1: return "STONE 1";
-        case TILE_STONE2: return "STONE 2";
-        case TILE_STONE3: return "STONE 3";
-        case TILE_STONE4: return "STONE 4";
-        case TILE_FURRY_RIGHT: return "FURRY R";
-        case TILE_FURRY_LEFT: return "FURRY L";
-        case TILE_FURRY_UP: return "FURRY U";
-        case TILE_FURRY_DOWN: return "FURRY D";
-        case TILE_GRENADIER_RIGHT: return "GRENADIER R";
-        case TILE_GRENADIER_LEFT: return "GRENADIER L";
-        case TILE_GRENADIER_UP: return "GRENADIER U";
-        case TILE_GRENADIER_DOWN: return "GRENADIER D";
-        case TILE_SLIME_RIGHT: return "SLIME R";
-        case TILE_SLIME_LEFT: return "SLIME L";
-        case TILE_SLIME_UP: return "SLIME U";
-        case TILE_SLIME_DOWN: return "SLIME D";
-        case TILE_ALIEN_RIGHT: return "ALIEN R";
-        case TILE_ALIEN_LEFT: return "ALIEN L";
-        case TILE_ALIEN_UP: return "ALIEN U";
-        case TILE_ALIEN_DOWN: return "ALIEN D";
-        case TILE_SMALL_BOMB1: return "SMALL BOMB";
-        case TILE_BIG_BOMB1: return "BIG BOMB";
-        case TILE_DYNAMITE1: return "DYNAMITE";
-        case TILE_MINE: return "MINE";
-        case TILE_EXIT: return "EXIT";
-        case TILE_DOOR: return "DOOR";
-        case TILE_MEDIKIT: return "MEDIKIT";
-        case TILE_BIOMASS: return "BIOMASS";
-        case TILE_DIAMOND: return "DIAMOND";
-        case TILE_WEAPONS_CRATE: return "WEAPONS CRATE";
-        case TILE_NAPALM1: return "NAPALM";
-        case TILE_LARGE_CRUCIFIX_BOMB: return "LARGE CRUCIFIX";
-        case TILE_SMALL_CRUCIFIX_BOMB: return "SMALL CRUCIFIX";
-        case TILE_PLASTIC: return "PLASTIC";
-        case TILE_BARREL: return "BARREL";
-        case TILE_JUMPING_BOMB: return "JUMPING BOMB";
-        case TILE_BRICK: return "BRICK";
-        case TILE_TELEPORT: return "TELEPORT";
-        case TILE_BUTTON_OFF: return "BUTTON";
-        case TILE_GOLD_SHIELD: return "GOLD SHIELD";
-        case TILE_GOLD_EGG: return "GOLD EGG";
-        case TILE_GOLD_PILE: return "GOLD PILE";
-        case TILE_GOLD_BRACELET: return "GOLD BRACELET";
-        case TILE_GOLD_BAR: return "GOLD BAR";
-        case TILE_GOLD_CROSS: return "GOLD CROSS";
-        case TILE_GOLD_SCEPTER: return "GOLD SCEPTER";
-        case TILE_GOLD_RUBIN: return "GOLD RUBIN";
-        case TILE_GOLD_CROWN: return "GOLD CROWN";
-        case TILE_SMALL_PICKAXE: return "SMALL PICKAXE";
-        case TILE_LARGE_PICKAXE: return "LARGE PICKAXE";
-        case TILE_DRILL: return "DRILL";
-        case TILE_METAL_WALL_PLACED: return "METAL WALL";
-        case TILE_LIFE_ITEM: return "EXTRA LIFE";
-        case TILE_ATOMIC1: return "ATOMIC BOMB";
-        case TILE_SMALL_RADIO_BLUE: return "S.RADIO BLUE";
-        case TILE_BIG_RADIO_BLUE: return "B.RADIO BLUE";
-        case TILE_SMALL_RADIO_GREEN: return "S.RADIO GREEN";
-        case TILE_BIG_RADIO_GREEN: return "B.RADIO GREEN";
-        case TILE_SMALL_RADIO_YELLOW: return "S.RADIO YELLOW";
-        case TILE_BIG_RADIO_YELLOW: return "B.RADIO YELLOW";
-        case TILE_SMALL_RADIO_RED: return "S.RADIO RED";
-        case TILE_BIG_RADIO_RED: return "B.RADIO RED";
-        case TILE_DIGGER_BOMB: return "DIGGER BOMB";
-        default: return "UNKNOWN";
-    }
-}
-
 // Treasure tiles for random placement (F3/Z)
 static const uint8_t TREASURE_TILES[] = {
     TILE_GOLD_SHIELD, TILE_GOLD_EGG, TILE_GOLD_PILE, TILE_GOLD_BRACELET,
@@ -1430,8 +1534,10 @@ static void editor_draw_box(uint8_t* tiles, int x0, int y0, int x1, int y1, int 
     (void)brush;
     int minx = x0 < x1 ? x0 : x1, maxx = x0 > x1 ? x0 : x1;
     int miny = y0 < y1 ? y0 : y1, maxy = y0 > y1 ? y0 : y1;
-    if (minx < 1) minx = 1; if (maxx > MAP_WIDTH - 2) maxx = MAP_WIDTH - 2;
-    if (miny < 1) miny = 1; if (maxy > MAP_HEIGHT - 2) maxy = MAP_HEIGHT - 2;
+    if (minx < 1) minx = 1;
+    if (maxx > MAP_WIDTH - 2) maxx = MAP_WIDTH - 2;
+    if (miny < 1) miny = 1;
+    if (maxy > MAP_HEIGHT - 2) maxy = MAP_HEIGHT - 2;
     for (int y = miny; y <= maxy; y++)
         for (int x = minx; x <= maxx; x++)
             tiles[y * 66 + x] = editor_vary_tile(tile);
@@ -1485,10 +1591,6 @@ static void editor_add_random_treasures(uint8_t* tiles, int count) {
             tiles[y * 66 + x] = TREASURE_TILES[rand() % TREASURE_COUNT];
         }
     }
-}
-
-static void editor_insert_random_treasure(uint8_t* tiles, int cx, int cy) {
-    tiles[cy * 66 + cx] = TREASURE_TILES[rand() % TREASURE_COUNT];
 }
 
 // Render toolbar: MINEDIT2.SPY background + dynamic overlays
@@ -1786,6 +1888,40 @@ static void app_run_editor(App* app, ApplicationContext* ctx) {
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) { running = false; break; }
 
+            // --- Pause menu ---
+            if (is_pause_event(&e, &app->input_config)) {
+                PauseChoice pc = pause_menu(app, ctx, PAUSE_CTX_EDITOR);
+                switch (pc) {
+                    case PAUSE_ED_NEW:
+                        ED_UNDO_SAVE(); editor_new_level(tiles);
+                        snprintf(filename, sizeof(filename), "NEWLEVEL.MNL"); modified = false;
+                        break;
+                    case PAUSE_ED_LOAD: {
+                        char ln[64];
+                        if (editor_file_browser(app, ctx, ln, sizeof(ln))) {
+                            ED_UNDO_SAVE();
+                            if (editor_load_level(tiles, ctx->game_dir, ln)) {
+                                snprintf(filename, sizeof(filename), "%s", ln); modified = false;
+                            }
+                        }
+                        break;
+                    }
+                    case PAUSE_ED_SAVE:
+                        if (editor_save_level(tiles, ctx->game_dir, filename)) modified = false;
+                        break;
+                    case PAUSE_ED_SAVE_QUIT:
+                        if (editor_save_level(tiles, ctx->game_dir, filename)) modified = false;
+                        running = false;
+                        break;
+                    case PAUSE_ED_QUIT:
+                        running = false;
+                        break;
+                    default: break; // PAUSE_NONE = resume
+                }
+                need_redraw = true;
+                continue;
+            }
+
             // --- Mouse: toolbar clicks ---
             if (e.type == SDL_MOUSEBUTTONDOWN) {
                 int bx, by;
@@ -2065,7 +2201,6 @@ static void app_run_editor(App* app, ApplicationContext* ctx) {
                         }
                         break;
 
-                    case SDL_SCANCODE_ESCAPE: case SDL_SCANCODE_F10: running = false; break;
                     default: break;
                 }
             }
@@ -2597,6 +2732,8 @@ static void app_run_campaign(App* app, ApplicationContext* ctx) {
         RoundResult result = game_run(app, ctx, app->campaign_levels[app->current_round], NULL);
         app->player_lives += result.lives_gained;
 
+        app_process_round_result(app, &result, 1, true);
+
         context_linger_music_start(ctx);
         context_animate(ctx, ANIMATION_FADE_DOWN, 7);
         context_linger_music_end(ctx);
@@ -2605,13 +2742,9 @@ static void app_run_campaign(App* app, ApplicationContext* ctx) {
             app->current_round++;
         } else if (result.end_type == ROUND_END_FAILED || result.end_type == ROUND_END_NORMAL) {
             app->player_lives--;
-            // Don't advance round - retry same level
         } else if (result.end_type == ROUND_END_QUIT || result.end_type == ROUND_END_FINAL) {
             break;
         }
-
-        // Minimum cash
-        if (app->player_cash[0] < 100) app->player_cash[0] += 150;
     }
 
     bool win = (app->current_round >= max_rounds);
@@ -2740,14 +2873,16 @@ static int app_run_net_shop(App* app, ApplicationContext* ctx) {
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
                 if (e.type == SDL_QUIT) { return 0; }
-                if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F10) {
-                    NetMessage quit_msg = {0};
-                    quit_msg.type = NET_MSG_SHOP_ALL_READY;
-                    quit_msg.data.shop_all_ready.next_round = -1;
-                    if (net->is_server) net_broadcast(net, &quit_msg);
-                    else net_send_to(net->server_peer, &quit_msg);
-                    net_flush(net);
-                    return -1;
+                if (net->is_server && is_pause_event(&e, &app->input_config)) {
+                    PauseChoice pc = pause_menu_net(app, ctx, PAUSE_CTX_SHOP, net);
+                    if (pc == PAUSE_END_GAME) {
+                        NetMessage quit_msg = {0};
+                        quit_msg.type = NET_MSG_SHOP_ALL_READY;
+                        quit_msg.data.shop_all_ready.next_round = -1;
+                        net_broadcast(net, &quit_msg);
+                        net_flush(net);
+                        return -1;
+                    }
                 }
                 if (!local_in_batch || ready_local) continue;
                 ActionType act = input_map_event(&e, 0, &app->input_config);
@@ -3320,16 +3455,7 @@ static void app_run_netgame(App* app, ApplicationContext* ctx) {
             context_animate(ctx, ANIMATION_FADE_DOWN, 7);
             RoundResult result = game_run(app, ctx, app->level_data[lvl_idx], net);
 
-            // Process round result
-            int nplayers = app->options.players;
-            int alive = 0;
-            for (int p = 0; p < nplayers; p++) if (result.player_survived[p]) alive++;
-            if (alive > 0 && alive < nplayers) {
-                for (int p = 0; p < nplayers; p++)
-                    if (result.player_survived[p]) app->player_rounds_won[p]++;
-            }
-            for (int p = 0; p < nplayers; p++)
-                if (app->player_cash[p] < 100) app->player_cash[p] += 150;
+            app_process_round_result(app, &result, app->options.players, false);
 
             context_linger_music_start(ctx);
             context_animate(ctx, ANIMATION_FADE_DOWN, 7);
@@ -3377,7 +3503,11 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
                 if (act == ACT_UP) { SelectedMenu p = menu_prev(selected); update_shovel(app, ctx, selected, p); selected = p; }
                 else if (act == ACT_DOWN) { SelectedMenu n = menu_next(selected); update_shovel(app, ctx, selected, n); selected = n; }
                 else if (act == ACT_ACTION || (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER))) navigating = false;
-                else if (act == ACT_STOP || (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE)) { selected = MENU_QUIT; navigating = false; running = false; }
+                else if (act == ACT_STOP) { selected = MENU_QUIT; navigating = false; running = false; }
+                else if (act == ACT_PAUSE) {
+                    PauseChoice pc = pause_menu(app, ctx, PAUSE_CTX_MAINMENU);
+                    if (pc == PAUSE_EDITOR) { entering_debug = true; debug_func = app_run_editor; navigating = false; }
+                }
                 else if (act == ACT_LEFT && selected == MENU_INFO) { entering_debug = true; debug_func = app_run_sound_test; navigating = false; }
                 else if (act == ACT_RIGHT && selected == MENU_INFO) { entering_debug = true; debug_func = app_run_level_test; navigating = false; }
                 else if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_M) { entering_debug = true; debug_func = app_run_music_debugger; navigating = false; }

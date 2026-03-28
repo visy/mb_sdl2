@@ -6,7 +6,7 @@
 
 static const char* action_names[] = {
     "UP", "DOWN", "LEFT", "RIGHT",
-    "STOP", "ACTION", "CYCLE", "REMOTE", "GOD"
+    "STOP", "ACTION", "CYCLE", "REMOTE", "GOD", "PAUSE"
 };
 
 static void set_default_pad_bindings(PlayerInputConfig* p) {
@@ -39,6 +39,9 @@ static void set_default_pad_bindings(PlayerInputConfig* p) {
 
     for (b = 0; b < MAX_BINDINGS && p->bindings[ACT_REMOTE][b].type != BIND_NONE; b++);
     if (b < MAX_BINDINGS) p->bindings[ACT_REMOTE][b] = (Binding){BIND_BTN, SDL_CONTROLLER_BUTTON_Y, 0};
+
+    for (b = 0; b < MAX_BINDINGS && p->bindings[ACT_PAUSE][b].type != BIND_NONE; b++);
+    if (b < MAX_BINDINGS) p->bindings[ACT_PAUSE][b] = (Binding){BIND_BTN, SDL_CONTROLLER_BUTTON_START, 0};
 }
 
 void input_get_default(InputConfig* config) {
@@ -56,6 +59,8 @@ void input_get_default(InputConfig* config) {
     config->p[0].bindings[ACT_REMOTE][0] = (Binding){BIND_KEY, SDL_SCANCODE_S, 0};
     config->p[0].bindings[ACT_GOD][0] = (Binding){BIND_KEY, SDL_SCANCODE_P, 0};
     config->p[0].bindings[ACT_GOD][1] = (Binding){BIND_BTN, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 0};
+    config->p[0].bindings[ACT_PAUSE][0] = (Binding){BIND_KEY, SDL_SCANCODE_ESCAPE, 0};
+    config->p[0].bindings[ACT_PAUSE][1] = (Binding){BIND_KEY, SDL_SCANCODE_F10, 0};
 
     // Player 2 Defaults
     config->p[1].bindings[ACT_UP][0] = (Binding){BIND_KEY, SDL_SCANCODE_I, 0};

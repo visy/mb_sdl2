@@ -162,4 +162,28 @@ void app_destroy(App* app);
 
 void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode);
 
+// Pause menu
+typedef enum {
+    PAUSE_NONE = -1,
+    PAUSE_EXIT_LEVEL = 0,
+    PAUSE_END_GAME,
+    PAUSE_EDITOR,
+    PAUSE_ED_NEW,
+    PAUSE_ED_LOAD,
+    PAUSE_ED_SAVE,
+    PAUSE_ED_SAVE_QUIT,
+    PAUSE_ED_QUIT
+} PauseChoice;
+
+typedef enum {
+    PAUSE_CTX_GAMEPLAY,
+    PAUSE_CTX_SHOP,
+    PAUSE_CTX_MAINMENU,
+    PAUSE_CTX_EDITOR
+} PauseContext;
+
+bool is_pause_event(const SDL_Event* e, InputConfig* config);
+PauseChoice pause_menu(App* app, ApplicationContext* ctx, PauseContext pctx);
+PauseChoice pause_menu_net(App* app, ApplicationContext* ctx, PauseContext pctx, NetContext* net);
+
 #endif // APP_H

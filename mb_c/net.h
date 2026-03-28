@@ -1,6 +1,19 @@
 #ifndef NET_H
 #define NET_H
 
+// Input flags — shared between local and netgame paths
+#define NET_INPUT_UP      1
+#define NET_INPUT_DOWN    2
+#define NET_INPUT_LEFT    3
+#define NET_INPUT_RIGHT   4
+#define NET_INPUT_STOP    5
+#define NET_INPUT_DIR_MASK  0x07
+#define NET_INPUT_ACTION    0x08
+#define NET_INPUT_CYCLE     0x10
+#define NET_INPUT_REMOTE    0x20
+#define NET_INPUT_QUIT      0x40
+#define NET_INPUT_GOD       0x80
+
 #ifdef MB_NET
 
 #include <stdbool.h>
@@ -25,26 +38,14 @@ typedef enum {
     NET_MSG_SHOP_READY,
     NET_MSG_SHOP_ALL_READY,
     NET_MSG_GAME_INPUT,
-    NET_MSG_GAME_TICK
+    NET_MSG_GAME_TICK,
+    NET_MSG_PAUSE           // host paused/unpaused the game
 } NetMessageType;
 
 typedef enum {
     SHOP_ACT_BUY,
     SHOP_ACT_SELL
 } ShopActionType;
-
-// Input flags for netgame lockstep
-#define NET_INPUT_UP      1
-#define NET_INPUT_DOWN    2
-#define NET_INPUT_LEFT    3
-#define NET_INPUT_RIGHT   4
-#define NET_INPUT_STOP    5
-#define NET_INPUT_DIR_MASK  0x07
-#define NET_INPUT_ACTION    0x08
-#define NET_INPUT_CYCLE     0x10
-#define NET_INPUT_REMOTE    0x20
-#define NET_INPUT_QUIT      0x40
-#define NET_INPUT_GOD       0x80
 
 // --- Individual message structs ---
 
@@ -131,6 +132,10 @@ typedef struct {
     uint8_t inputs[NET_MAX_PLAYERS];
 } NetGameTick;
 
+typedef struct {
+    bool paused;
+} NetPause;
+
 // --- Tagged union message ---
 
 typedef struct {
@@ -149,6 +154,7 @@ typedef struct {
         NetShopAllReady shop_all_ready;
         NetGameInput game_input;
         NetGameTick game_tick;
+        NetPause pause;
     } data;
 } NetMessage;
 

@@ -1425,9 +1425,17 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
     // HUD background
     SDL_RenderCopy(ctx->renderer, app->players.texture, NULL, NULL);
 
+    // Black out unused player slots
     SDL_Color yellow = {255, 255, 0, 255}, white = {255, 255, 255, 255}, cyan = {0, 255, 255, 255};
     static const int PLAYER_X[] = {12, 174, 337, 500};
     static const int HEALTH_BAR_LEFT[] = {142, 304, 467, 630};
+    if (world->num_players < 4) {
+        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+        for (int p = world->num_players; p < 4; p++) {
+            SDL_Rect r = {PLAYER_X[p] - 12, 0, 162, 30};
+            SDL_RenderFillRect(ctx->renderer, &r);
+        }
+    }
 
     for (int p = 0; p < world->num_players; ++p) {
         int pos_x = PLAYER_X[p];
@@ -1447,7 +1455,7 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
         render_text(ctx->renderer, &app->font, pos_x + 50, 11, cyan, drill_str);
 
         char cash_str[16];
-        snprintf(cash_str, sizeof(cash_str), "%d", app->player_cash[p]);
+        snprintf(cash_str, sizeof(cash_str), "%d", app->player_cash[p] + world->cash_earned[p]);
         SDL_Rect r_cash = {pos_x + 50, 21, 40, 8};
         SDL_RenderFillRect(ctx->renderer, &r_cash);
         render_text(ctx->renderer, &app->font, pos_x + 50, 21, yellow, cash_str);
@@ -1522,15 +1530,16 @@ static void render_world(App* app, ApplicationContext* ctx, World* world) {
 static void player_interact_tile(App* app, World* world, int p, int ncx, int ncy) {
     uint8_t val = world->tiles[ncy][ncx];
 
-    // Treasures
+    // Treasures — accumulate in cash_earned, committed to player_cash at end of round
     if (val >= TILE_GOLD_SHIELD && val <= TILE_GOLD_CROWN) {
-        app->player_cash[p] += get_treasure_value(val);
+        int v = get_treasure_value(val);
+        if (p < MAX_PLAYERS) world->cash_earned[p] += v;
         world->tiles[ncy][ncx] = TILE_PASSAGE;
         context_play_sample_freq(app->sound_kili, 10000 + (game_rand() % 5000));
         return;
     }
     if (val == TILE_DIAMOND) {
-        app->player_cash[p] += 1000;
+        if (p < MAX_PLAYERS) world->cash_earned[p] += 1000;
         world->tiles[ncy][ncx] = TILE_PASSAGE;
         context_play_sample_freq(app->sound_kili, 10000 + (game_rand() % 5000));
         return;
@@ -1735,10 +1744,61 @@ static void apply_game_remote(World* world, int p) {
                 world->timer[ry][rx] = 1;
 }
 
+// Shared input application: takes packed input flags and applies to actor/world.
+// Input flag format matches NET_INPUT_* constants (direction in low 3 bits, actions in higher bits).
+static void apply_player_input(App* app, World* world, int p, uint8_t input) {
+    if (input & NET_INPUT_GOD) world->god_mode = !world->god_mode;
+    Actor* actor = &world->actors[p];
+    if (!actor->is_dead) {
+        int dir = input & NET_INPUT_DIR_MASK;
+        if (dir == NET_INPUT_UP)         { actor->facing = DIR_UP;    actor->moving = true; }
+        else if (dir == NET_INPUT_DOWN)  { actor->facing = DIR_DOWN;  actor->moving = true; }
+        else if (dir == NET_INPUT_LEFT)  { actor->facing = DIR_LEFT;  actor->moving = true; }
+        else if (dir == NET_INPUT_RIGHT) { actor->facing = DIR_RIGHT; actor->moving = true; }
+        else if (dir == NET_INPUT_STOP)  { actor->moving = false; }
+        if (input & NET_INPUT_ACTION) apply_game_action(app, world, p);
+        if (input & NET_INPUT_CYCLE)  apply_game_cycle(app, world, p);
+        if (input & NET_INPUT_REMOTE) apply_game_remote(world, p);
+    }
+}
+
+// Convert an ActionType from the input system to the packed input flag format.
+static uint8_t action_to_input_flag(ActionType act) {
+    switch (act) {
+        case ACT_UP:     return NET_INPUT_UP;
+        case ACT_DOWN:   return NET_INPUT_DOWN;
+        case ACT_LEFT:   return NET_INPUT_LEFT;
+        case ACT_RIGHT:  return NET_INPUT_RIGHT;
+        case ACT_STOP:   return NET_INPUT_STOP;
+        case ACT_ACTION: return NET_INPUT_ACTION;
+        case ACT_CYCLE:  return NET_INPUT_CYCLE;
+        case ACT_REMOTE: return NET_INPUT_REMOTE;
+        case ACT_GOD:    return NET_INPUT_GOD;
+        default:         return 0;
+    }
+}
+
 #ifdef MB_NET
+// ==================== Netgame pause overlay for clients ====================
+
+static void net_pause_overlay(App* app, ApplicationContext* ctx) {
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 180);
+    SDL_Rect bg = {170, 210, 300, 60};
+    SDL_RenderFillRect(ctx->renderer, &bg);
+    SDL_SetRenderDrawColor(ctx->renderer, 200, 200, 200, 255);
+    SDL_RenderDrawRect(ctx->renderer, &bg);
+    SDL_Color white = {255, 255, 255, 255};
+    render_text(ctx->renderer, &app->font, 200, 230, white, "HOST HAS PAUSED THE GAME");
+    SDL_SetRenderTarget(ctx->renderer, NULL);
+    context_present(ctx);
+}
+
 // ==================== Netgame input exchange ====================
 
-static bool net_exchange_inputs(NetContext* net, uint8_t local_input,
+static bool net_exchange_inputs(App* app, ApplicationContext* ctx,
+                                NetContext* net, uint8_t local_input,
                                 uint8_t all_inputs[NET_MAX_PLAYERS], uint32_t frame,
                                 Uint32 frame_start, int tick_ms) {
     if (net->is_server) {
@@ -1805,6 +1865,21 @@ static bool net_exchange_inputs(NetContext* net, uint8_t local_input,
                     return true;
                 } else if (recv.type == NET_MSG_PLAYER_LEAVE) {
                     return false;
+                } else if (recv.type == NET_MSG_PAUSE && recv.data.pause.paused) {
+                    // Host paused: show overlay, wait for unpause
+                    net_pause_overlay(app, ctx);
+                    bool paused = true;
+                    while (paused) {
+                        SDL_Event pe;
+                        while (SDL_PollEvent(&pe)) { /* drain events */ }
+                        NetMessage pr; ENetPeer* pf;
+                        while (net_poll(net, &pr, &pf) > 0) {
+                            if (pr.type == NET_MSG_PAUSE && !pr.data.pause.paused) paused = false;
+                            else if (pr.type == NET_MSG_PLAYER_LEAVE) return false;
+                        }
+                        SDL_Delay(16);
+                    }
+                    start = SDL_GetTicks(); // reset timeout after unpause
                 }
             }
             SDL_Delay(1);
@@ -1891,45 +1966,49 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
         if (net) {
             // === NETGAME: lockstep input ===
             uint8_t local_input = 0;
+            bool want_pause = false;
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
                 if (e.type == SDL_QUIT) { local_input |= NET_INPUT_QUIT; break; }
+                if (is_pause_event(&e, &app->input_config)) {
+                    if (net->is_server) want_pause = true;
+                    continue;
+                }
                 ActionType act = input_map_event(&e, 0, &app->input_config);
-                if (act == ACT_UP)    local_input = (local_input & ~NET_INPUT_DIR_MASK) | NET_INPUT_UP;
-                else if (act == ACT_DOWN)  local_input = (local_input & ~NET_INPUT_DIR_MASK) | NET_INPUT_DOWN;
-                else if (act == ACT_LEFT)  local_input = (local_input & ~NET_INPUT_DIR_MASK) | NET_INPUT_LEFT;
-                else if (act == ACT_RIGHT) local_input = (local_input & ~NET_INPUT_DIR_MASK) | NET_INPUT_RIGHT;
-                else if (act == ACT_STOP)  local_input = (local_input & ~NET_INPUT_DIR_MASK) | NET_INPUT_STOP;
-                else if (act == ACT_ACTION) local_input |= NET_INPUT_ACTION;
-                else if (act == ACT_CYCLE)  local_input |= NET_INPUT_CYCLE;
-                else if (act == ACT_REMOTE) local_input |= NET_INPUT_REMOTE;
-                else if (act == ACT_GOD && (e.type == SDL_KEYDOWN || e.type == SDL_CONTROLLERBUTTONDOWN))
-                    local_input |= NET_INPUT_GOD;
-                if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F10)
-                    local_input |= NET_INPUT_QUIT;
+                if (act != ACT_MAX_PLAYER && act != ACT_PAUSE) {
+                    uint8_t flags = action_to_input_flag(act);
+                    // Direction flags replace previous direction; action flags accumulate
+                    if (flags && flags <= NET_INPUT_STOP)
+                        local_input = (local_input & ~NET_INPUT_DIR_MASK) | flags;
+                    else
+                        local_input |= flags;
+                }
+            }
+
+            // Host pause: broadcast pause, show menu, broadcast unpause
+            if (want_pause && net->is_server) {
+                NetMessage pmsg = {0}; pmsg.type = NET_MSG_PAUSE; pmsg.data.pause.paused = true;
+                net_broadcast(net, &pmsg); net_flush(net);
+
+                PauseChoice pc = pause_menu_net(app, ctx, PAUSE_CTX_GAMEPLAY, net);
+
+                pmsg.data.pause.paused = false;
+                net_broadcast(net, &pmsg); net_flush(net);
+
+                if (pc == PAUSE_EXIT_LEVEL) { running = false; continue; }
+                else if (pc == PAUSE_END_GAME) { running = false; quit_requested = true; continue; }
+                // Adjust frame_start to exclude pause time
+                frame_start = SDL_GetTicks();
             }
 
             uint8_t all_inputs[NET_MAX_PLAYERS] = {0};
-            if (!net_exchange_inputs(net, local_input, all_inputs, (uint32_t)world.round_counter, frame_start, tick_ms)) {
+            if (!net_exchange_inputs(app, ctx, net, local_input, all_inputs, (uint32_t)world.round_counter, frame_start, tick_ms)) {
                 running = false;
                 quit_requested = true;
             } else {
                 for (int p = 0; p < world.num_players; p++) {
-                    uint8_t inp = all_inputs[p];
-                    if (inp & NET_INPUT_QUIT) { running = false; quit_requested = true; }
-                    if (inp & NET_INPUT_GOD) world.god_mode = !world.god_mode;
-                    Actor* actor = &world.actors[p];
-                    if (!actor->is_dead) {
-                        int dir = inp & NET_INPUT_DIR_MASK;
-                        if (dir == NET_INPUT_UP)    { actor->facing = DIR_UP;    actor->moving = true; }
-                        else if (dir == NET_INPUT_DOWN)  { actor->facing = DIR_DOWN;  actor->moving = true; }
-                        else if (dir == NET_INPUT_LEFT)  { actor->facing = DIR_LEFT;  actor->moving = true; }
-                        else if (dir == NET_INPUT_RIGHT) { actor->facing = DIR_RIGHT; actor->moving = true; }
-                        else if (dir == NET_INPUT_STOP)  { actor->moving = false; }
-                        if (inp & NET_INPUT_ACTION) apply_game_action(app, &world, p);
-                        if (inp & NET_INPUT_CYCLE)  apply_game_cycle(app, &world, p);
-                        if (inp & NET_INPUT_REMOTE) apply_game_remote(&world, p);
-                    }
+                    if (all_inputs[p] & NET_INPUT_QUIT) { running = false; quit_requested = true; }
+                    apply_player_input(app, &world, p, all_inputs[p]);
                 }
             }
         } else
@@ -1940,39 +2019,18 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
             while (SDL_PollEvent(&e)) {
                 if (e.type == SDL_QUIT) { running = false; quit_requested = true; break; }
 
+                if (is_pause_event(&e, &app->input_config)) {
+                    PauseChoice pc = pause_menu(app, ctx, PAUSE_CTX_GAMEPLAY);
+                    if (pc == PAUSE_EXIT_LEVEL) { running = false; }
+                    else if (pc == PAUSE_END_GAME) { running = false; quit_requested = true; }
+                    continue;
+                }
+
                 for (int p = 0; p < world.num_players; ++p) {
                     ActionType act = input_map_event(&e, p, &app->input_config);
-
-                    if (act == ACT_GOD && (e.type == SDL_KEYDOWN || e.type == SDL_CONTROLLERBUTTONDOWN)) {
-                        world.god_mode = !world.god_mode;
-                    }
-
-                    if (act != ACT_MAX_PLAYER && act != ACT_GOD && !world.actors[p].is_dead) {
-                        Actor* actor = &world.actors[p];
-                        switch (act) {
-                            case ACT_UP:    actor->facing = DIR_UP;    actor->moving = true; break;
-                            case ACT_DOWN:  actor->facing = DIR_DOWN;  actor->moving = true; break;
-                            case ACT_LEFT:  actor->facing = DIR_LEFT;  actor->moving = true; break;
-                            case ACT_RIGHT: actor->facing = DIR_RIGHT; actor->moving = true; break;
-                            case ACT_STOP:  actor->moving = false; break;
-                            case ACT_ACTION: apply_game_action(app, &world, p); break;
-                            case ACT_CYCLE:  apply_game_cycle(app, &world, p); break;
-                            case ACT_REMOTE: apply_game_remote(&world, p); break;
-                            default: break;
-                        }
-                    }
-
-                    if (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
-                        running = false;
-                        if (world.campaign_mode) quit_requested = true;
-                    }
-                    if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
-                        running = false;
-                        if (world.campaign_mode) quit_requested = true;
-                    }
-                    if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F10) {
-                        running = false;
-                        quit_requested = true;
+                    if (act != ACT_MAX_PLAYER && act != ACT_PAUSE) {
+                        uint8_t flags = action_to_input_flag(act);
+                        apply_player_input(app, &world, p, flags);
                     }
                 }
             }
@@ -2017,21 +2075,25 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
             }
         }
 
-        // Campaign: exit or all dead ends round
-        // Multiplayer: <= 1 alive ends round
+        // Round end conditions (matching Rust: counter increments, ends at > 100)
         if (world.exited) {
             running = false;
-        } else if (world.campaign_mode) {
-            if (alive_count == 0 && world.round_end_timer == 0)
-                world.round_end_timer = 120;
-        } else {
-            if (alive_count <= 1 && world.round_end_timer == 0)
-                world.round_end_timer = 120;
+        } else if (world.round_counter % 5 == 0) {
+            if (world.campaign_mode) {
+                if (alive_count == 0) world.round_end_timer += 2;
+            } else if (alive_count < 2) {
+                world.round_end_timer += 3;
+            }
         }
-        if (world.round_end_timer > 0) {
-            world.round_end_timer--;
-            if (world.round_end_timer == 0) running = false;
+        // All gold collected ends multiplayer round
+        if (world.round_counter % 20 == 0 && !world.campaign_mode) {
+            bool has_gold = false;
+            for (int y = 0; y < MAP_HEIGHT && !has_gold; y++)
+                for (int x = 0; x < MAP_WIDTH && !has_gold; x++)
+                    if (is_treasure(world.tiles[y][x])) has_gold = true;
+            if (!has_gold) world.round_end_timer += 20;
         }
+        if (world.round_end_timer > 100) running = false;
 
         // Player movement (super drill = double speed via 2 iterations)
         for (int p = 0; p < world.num_players; p++) {
@@ -2355,7 +2417,12 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
     memset(&result, 0, sizeof(result));
     for (int p = 0; p < world.num_players; p++) {
         result.player_survived[p] = !world.actors[p].is_dead;
+        result.player_cash_earned[p] = world.cash_earned[p];
     }
+    // Calculate remaining gold value on level
+    for (int y = 0; y < MAP_HEIGHT; y++)
+        for (int x = 0; x < MAP_WIDTH; x++)
+            result.gold_remaining += get_treasure_value(world.tiles[y][x]);
     if (quit_requested && world.campaign_mode) result.end_type = ROUND_END_QUIT;
     else if (quit_requested && !world.campaign_mode) result.end_type = ROUND_END_FINAL;
     else if (world.exited) result.end_type = ROUND_END_EXITED;
