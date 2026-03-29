@@ -186,6 +186,10 @@ typedef struct {
     bool campaign_mode;
     int lives_gained;
     uint32_t cash_earned[MAX_PLAYERS]; // per-round accumulated cash
+    uint32_t treasures_collected[MAX_PLAYERS];
+    uint32_t bombs_dropped[MAX_PLAYERS];
+    uint32_t deaths[MAX_PLAYERS];
+    uint32_t meters_ran[MAX_PLAYERS];
     bool fog[MAP_HEIGHT][MAP_WIDTH];
 
     // Off-screen map canvas for persistent tile + effect rendering
@@ -208,6 +212,10 @@ typedef enum {
 typedef struct {
     bool player_survived[MAX_PLAYERS];
     uint32_t player_cash_earned[MAX_PLAYERS];
+    uint32_t treasures_collected[MAX_PLAYERS];
+    uint32_t bombs_dropped[MAX_PLAYERS];
+    uint32_t deaths[MAX_PLAYERS];
+    uint32_t meters_ran[MAX_PLAYERS];
     uint32_t gold_remaining;
     RoundEndType end_type;
     int lives_gained;

@@ -1526,13 +1526,13 @@ static void player_interact_tile(App* app, World* world, int p, int ncx, int ncy
     // Treasures — accumulate in cash_earned, committed to player_cash at end of round
     if (val >= TILE_GOLD_SHIELD && val <= TILE_GOLD_CROWN) {
         int v = get_treasure_value(val);
-        if (p < MAX_PLAYERS) world->cash_earned[p] += v;
+        if (p < MAX_PLAYERS) { world->cash_earned[p] += v; world->treasures_collected[p]++; }
         world->tiles[ncy][ncx] = TILE_PASSAGE;
         context_play_sample_freq(app->sound_kili, 10000 + (game_rand() % 5000));
         return;
     }
     if (val == TILE_DIAMOND) {
-        if (p < MAX_PLAYERS) world->cash_earned[p] += 1000;
+        if (p < MAX_PLAYERS) { world->cash_earned[p] += 1000; world->treasures_collected[p]++; }
         world->tiles[ncy][ncx] = TILE_PASSAGE;
         context_play_sample_freq(app->sound_kili, 10000 + (game_rand() % 5000));
         return;
@@ -1713,6 +1713,7 @@ static void apply_game_action(App* app, World* world, int p) {
             if (w == EQUIP_JUMPING_BOMB) world->hits[cy][cx] = 5;
             if (w == EQUIP_BIOMASS) world->hits[cy][cx] = 400;
             app->player_inventory[p][w]--;
+            if (p < MAX_PLAYERS) world->bombs_dropped[p]++;
         }
     }
 }
@@ -2033,6 +2034,7 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
             Actor* actor = &world.actors[p];
             if (actor->is_dead && actor->health == 0) {
                 actor->health = -1;
+                world.deaths[p]++;
                 int cx = actor->pos.x / 10;
                 int cy = (actor->pos.y - 30) / 10;
                 if (cx >= 0 && cx < MAP_WIDTH && cy >= 0 && cy < MAP_HEIGHT) world.tiles[cy][cx] = TILE_BLOOD;
@@ -2121,6 +2123,7 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
                     else if (actor->facing == DIR_RIGHT) actor->pos.x++;
                     else if (actor->facing == DIR_UP) actor->pos.y--;
                     else if (actor->facing == DIR_DOWN) actor->pos.y++;
+                    world.meters_ran[p]++;
                 }
 
                 // Center orthogonal position
@@ -2409,6 +2412,10 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
     for (int p = 0; p < world.num_players; p++) {
         result.player_survived[p] = !world.actors[p].is_dead;
         result.player_cash_earned[p] = world.cash_earned[p];
+        result.treasures_collected[p] = world.treasures_collected[p];
+        result.bombs_dropped[p] = world.bombs_dropped[p];
+        result.deaths[p] = world.deaths[p];
+        result.meters_ran[p] = world.meters_ran[p];
     }
     // Calculate remaining gold value on level
     for (int y = 0; y < MAP_HEIGHT; y++)
