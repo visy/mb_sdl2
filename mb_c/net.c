@@ -176,6 +176,7 @@ int net_poll(NetContext* ctx, NetMessage* out_msg, ENetPeer** out_peer) {
                     NetMessage info_msg;
                     memset(&info_msg, 0, sizeof(info_msg));
                     info_msg.type = NET_MSG_SERVER_INFO;
+                    info_msg.data.server_info = ctx->host_info;
                     info_msg.data.server_info.player_count = ctx->player_count;
                     info_msg.data.server_info.assigned_index = slot;
                     memcpy(info_msg.data.server_info.player_names,

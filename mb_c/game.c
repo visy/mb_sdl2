@@ -2011,6 +2011,26 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
             while (SDL_PollEvent(&e)) {
                 if (e.type == SDL_QUIT) { running = false; quit_requested = true; break; }
 
+                // Gamepad hotplug
+                if (e.type == SDL_CONTROLLERDEVICEADDED && ctx->num_pads < 4) {
+                    if (SDL_IsGameController(e.cdevice.which)) {
+                        SDL_GameController* gc = SDL_GameControllerOpen(e.cdevice.which);
+                        if (gc) ctx->pads[ctx->num_pads++] = gc;
+                    }
+                    input_assign_pads(&app->input_config, ctx->pads, ctx->num_pads);
+                } else if (e.type == SDL_CONTROLLERDEVICEREMOVED) {
+                    for (int i = 0; i < ctx->num_pads; i++) {
+                        SDL_Joystick* joy = SDL_GameControllerGetJoystick(ctx->pads[i]);
+                        if (joy && SDL_JoystickInstanceID(joy) == e.cdevice.which) {
+                            SDL_GameControllerClose(ctx->pads[i]);
+                            for (int j = i; j < ctx->num_pads - 1; j++) ctx->pads[j] = ctx->pads[j + 1];
+                            ctx->pads[--ctx->num_pads] = NULL;
+                            break;
+                        }
+                    }
+                    input_assign_pads(&app->input_config, ctx->pads, ctx->num_pads);
+                }
+
                 if (is_pause_event(&e, &app->input_config)) {
                     PauseChoice pc = pause_menu(app, ctx, PAUSE_CTX_GAMEPLAY);
                     if (pc == PAUSE_EXIT_LEVEL) { running = false; }

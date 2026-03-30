@@ -123,7 +123,7 @@ void context_init(ApplicationContext* ctx, const char* game_dir, bool windowed) 
         report_sdl_error("Failed to open audio");
     }
     Mix_AllocateChannels(32);
-    Mix_Volume(-1, 24);
+    Mix_Volume(-1, 16);
     Mix_ChannelFinished(channel_finished_callback);
 }
 
@@ -372,12 +372,12 @@ Mix_Chunk* context_load_sample(ApplicationContext* ctx, const char* filename) {
     fread(wav_buf + 44, 1, pcm_len, f);
     fclose(f);
 
-    // Let SDL_mixer load it and manage the memory
     SDL_RWops* rw = SDL_RWFromMem(wav_buf, total_len);
-    Mix_Chunk* chunk = Mix_LoadWAV_RW(rw, 1); // 1 = auto-close RW
-    
-    // We can free our temporary wav_buf because Mix_LoadWAV_RW copies the data
+    Mix_Chunk* chunk = Mix_LoadWAV_RW(rw, 1);
     free(wav_buf);
+
+    // Attenuate chunk volume to prevent clipping when multiple samples overlap
+    if (chunk) chunk->volume = MIX_MAX_VOLUME / 2;
 
     return chunk;
 }

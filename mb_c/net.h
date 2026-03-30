@@ -169,6 +169,7 @@ typedef struct {
     bool connected;
     char player_names[NET_MAX_PLAYERS][NET_PLAYER_NAME_LEN];
     bool player_ready[NET_MAX_PLAYERS];
+    NetServerInfo host_info;            // server: options to send to joining clients
 } NetContext;
 
 // --- API ---

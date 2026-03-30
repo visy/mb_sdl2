@@ -65,6 +65,16 @@ typedef struct {
     int8_t identities[MAX_PLAYERS]; // roster index per player slot, -1 = none
 } PlayerRoster;
 
+#define HIGHSCORE_MAX 10
+#define HIGHSCORE_NAME_LEN 20
+#define HIGHSCORE_RECORD_SIZE 26
+
+typedef struct {
+    char name[HIGHSCORE_NAME_LEN + 1];
+    uint8_t level;
+    uint32_t money;
+} HighScoreEntry;
+
 // Per-game stats accumulator (reset each tournament, merged at end)
 typedef struct {
     uint32_t rounds;
@@ -149,6 +159,7 @@ typedef struct {
 
     PlayerRoster roster;
     GameStats game_stats[MAX_PLAYERS];
+    HighScoreEntry highscores[HIGHSCORE_MAX];
 
     InputConfig input_config;
     GameOptions options;
