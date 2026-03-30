@@ -209,14 +209,46 @@ void context_animate(ApplicationContext* ctx, Animation animation, int steps) {
     SDL_SetTextureAlphaMod(ctx->buffer, 255);
 }
 
+void context_notify(ApplicationContext* ctx, const char* text, int duration_ms) {
+    snprintf(ctx->notify_text, sizeof(ctx->notify_text), "%s", text);
+    ctx->notify_until = SDL_GetTicks() + duration_ms;
+}
+
 void context_present(ApplicationContext* ctx) {
     SDL_SetRenderTarget(ctx->renderer, NULL);
     SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
     SDL_RenderClear(ctx->renderer);
 
-    // Render game buffer scaled to centered viewport
     SDL_RenderCopy(ctx->renderer, ctx->buffer, NULL, &ctx->viewport);
 
+    // Draw toast notification overlay (rendered into buffer temporarily, then re-copied)
+    if (ctx->notify_until && SDL_GetTicks() < ctx->notify_until && ctx->notify_font) {
+        // Create a small overlay texture so we don't corrupt the persistent buffer
+        SDL_Texture* overlay = SDL_CreateTexture(ctx->renderer, SDL_PIXELFORMAT_RGBA8888,
+            SDL_TEXTUREACCESS_TARGET, SCREEN_WIDTH, 16);
+        SDL_SetTextureBlendMode(overlay, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderTarget(ctx->renderer, overlay);
+        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 0);
+        SDL_RenderClear(ctx->renderer);
+        int len = (int)strlen(ctx->notify_text);
+        int tw = len * 8;
+        int bx = (SCREEN_WIDTH - tw) / 2;
+        SDL_SetRenderDrawBlendMode(ctx->renderer, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 180);
+        SDL_Rect bg = {bx - 6, 0, tw + 12, 14};
+        SDL_RenderFillRect(ctx->renderer, &bg);
+        SDL_Color green = {0, 220, 0, 255};
+        render_text(ctx->renderer, ctx->notify_font, bx, 3, green, ctx->notify_text);
+        // Blit overlay onto screen
+        SDL_SetRenderTarget(ctx->renderer, NULL);
+        SDL_Rect src = {0, 0, SCREEN_WIDTH, 16};
+        SDL_Rect dst = {ctx->viewport.x, ctx->viewport.y + 2,
+                        ctx->viewport.w, 16 * ctx->viewport.h / SCREEN_HEIGHT};
+        SDL_RenderCopy(ctx->renderer, overlay, &src, &dst);
+        SDL_DestroyTexture(overlay);
+    }
+    if (ctx->notify_until && SDL_GetTicks() >= ctx->notify_until)
+        ctx->notify_until = 0;
 
     SDL_RenderPresent(ctx->renderer);
 }

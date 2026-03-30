@@ -193,6 +193,7 @@ typedef enum {
     PAUSE_CTX_EDITOR
 } PauseContext;
 
+void app_handle_hotplug(App* app, ApplicationContext* ctx, const SDL_Event* e);
 bool is_pause_event(const SDL_Event* e, InputConfig* config);
 PauseChoice pause_menu(App* app, ApplicationContext* ctx, PauseContext pctx);
 PauseChoice pause_menu_net(App* app, ApplicationContext* ctx, PauseContext pctx, NetContext* net);

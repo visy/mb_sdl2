@@ -224,6 +224,7 @@ static int ps_name_select(App* app, ApplicationContext* ctx, int num_players) {
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            app_handle_hotplug(app, ctx, &e);
             if (e.type == SDL_QUIT) { running = false; break; }
 
             int prev = arrow;
@@ -313,6 +314,7 @@ bool app_run_player_select(App* app, ApplicationContext* ctx) {
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            app_handle_hotplug(app, ctx, &e);
             if (e.type == SDL_QUIT) { running = false; break; }
 
             int prev = active;

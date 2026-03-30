@@ -281,6 +281,7 @@ void app_run_shop(App* app, ApplicationContext* ctx) {
 
                 SDL_Event e;
                 while (SDL_PollEvent(&e)) {
+                    app_handle_hotplug(app, ctx, &e);
                     if (e.type == SDL_QUIT) { quit = true; batch_done = true; break; }
                     if (is_pause_event(&e, &app->input_config)) {
                         PauseChoice pc = pause_menu(app, ctx, PAUSE_CTX_SHOP);

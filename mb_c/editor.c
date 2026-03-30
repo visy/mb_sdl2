@@ -359,7 +359,6 @@ bool text_entry_dialog(App* app, ApplicationContext* ctx, char* out_buf, int max
     if (len >= max_len - 1) len = max_len - 2;
 
     int osk_row = 0, osk_col = 0;
-    bool osk_visible = true;
     // Start uppercase, auto-switch to lowercase after first character (unless TEXT_UPPER)
     bool osk_shift = false;
     bool result = false;
@@ -386,7 +385,7 @@ bool text_entry_dialog(App* app, ApplicationContext* ctx, char* out_buf, int max
         render_text(ctx->renderer, &app->font, 110, 176, yellow, buf);
         render_text(ctx->renderer, &app->font, 110 + len * 8, 176, white, "_");
 
-        if (osk_visible) {
+        {
             int osk_x = 140, osk_y = 196;
             for (int r = 0; r < OSK_ROWS; r++) {
                 for (int c = 0; c < OSK_COLS && osk_rows[r][c]; c++) {
@@ -408,9 +407,7 @@ bool text_entry_dialog(App* app, ApplicationContext* ctx, char* out_buf, int max
                 render_text(ctx->renderer, &app->font, 310, 238, gray, "Y:");
                 render_text(ctx->renderer, &app->font, 310 + 16, 238, osk_shift ? green : gray, osk_shift ? "ABC" : "abc");
             }
-            render_text(ctx->renderer, &app->font, 310, 252, gray, "X:HIDE KB");
-        } else {
-            render_text(ctx->renderer, &app->font, 110, 310, gray, "ENTER:OK  ESC:CANCEL");
+            render_text(ctx->renderer, &app->font, 110, 270, gray, "ENTER:OK  ESC:CANCEL");
         }
 
         SDL_SetRenderTarget(ctx->renderer, NULL);
@@ -419,6 +416,7 @@ bool text_entry_dialog(App* app, ApplicationContext* ctx, char* out_buf, int max
         // --- Input ---
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            app_handle_hotplug(app, ctx, &e);
             if (e.type == SDL_QUIT) { SDL_StopTextInput(); return false; }
 
             // Keyboard input
@@ -444,55 +442,34 @@ bool text_entry_dialog(App* app, ApplicationContext* ctx, char* out_buf, int max
                 }
             }
 
-            // Gamepad buttons — auto-show OSK on first gamepad input
+            // Gamepad buttons
             if (e.type == SDL_CONTROLLERBUTTONDOWN) {
-                if (!osk_visible && e.cbutton.button != SDL_CONTROLLER_BUTTON_X)
-                    osk_visible = true;
-                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_X) {
-                    osk_visible = !osk_visible;
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) osk_row = (osk_row + OSK_ROWS - 1) % OSK_ROWS;
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) osk_row = (osk_row + 1) % OSK_ROWS;
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) osk_col = (osk_col + OSK_COLS - 1) % OSK_COLS;
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) osk_col = (osk_col + 1) % OSK_COLS;
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A) {
+                    char ch = osk_rows[osk_row][osk_col];
+                    if (ch != ' ' && len < max_len - 1) {
+                        buf[len++] = ch;
+                        buf[len] = '\0';
+                        if (!(flags & TEXT_UPPER) && len == 1) osk_shift = false;
+                    }
                 }
-                else if (osk_visible) {
-                    if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) osk_row = (osk_row + OSK_ROWS - 1) % OSK_ROWS;
-                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) osk_row = (osk_row + 1) % OSK_ROWS;
-                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT) osk_col = (osk_col + OSK_COLS - 1) % OSK_COLS;
-                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) osk_col = (osk_col + 1) % OSK_COLS;
-                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A) {
-                        char ch = osk_rows[osk_row][osk_col];
-                        if (ch != ' ' && len < max_len - 1) {
-                            buf[len++] = ch;
-                            buf[len] = '\0';
-                            // Auto-lowercase after first character
-                            if (!(flags & TEXT_UPPER) && len == 1) osk_shift = false;
-                        }
-                    }
-                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_B) {
-                        if (len > 0) buf[--len] = '\0';
-                        // Back to uppercase if empty
-                        if (len == 0 && !(flags & TEXT_UPPER)) osk_shift = true;
-                    }
-                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_Y && !(flags & TEXT_UPPER)) {
-                        osk_shift = !osk_shift;
-                    }
-                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
-                        if (len > 0) { result = true; goto done; }
-                    }
-                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) goto done;
-                } else {
-                    // OSK hidden: Start=confirm, Back=cancel
-                    if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
-                        if (len > 0) { result = true; goto done; }
-                    }
-                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) goto done;
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_B) {
+                    if (len > 0) buf[--len] = '\0';
+                    if (len == 0 && !(flags & TEXT_UPPER)) osk_shift = true;
                 }
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_Y && !(flags & TEXT_UPPER)) {
+                    osk_shift = !osk_shift;
+                }
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
+                    if (len > 0) { result = true; goto done; }
+                }
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) goto done;
             }
-            // Left analog stick — auto-show OSK, navigate when visible
+            // Left analog stick navigation
             if (e.type == SDL_CONTROLLERAXISMOTION) {
-                if (!osk_visible) {
-                    int v = e.caxis.value;
-                    if (v < -16000 || v > 16000) osk_visible = true;
-                }
-            }
-            if (osk_visible && e.type == SDL_CONTROLLERAXISMOTION) {
                 int state = 0;
                 if (e.caxis.value < -16000) state = -1;
                 else if (e.caxis.value > 16000) state = 1;
@@ -508,11 +485,9 @@ bool text_entry_dialog(App* app, ApplicationContext* ctx, char* out_buf, int max
             }
         }
         // Skip over blank cells
-        if (osk_visible) {
-            while (osk_rows[osk_row][osk_col] == ' ') {
-                osk_col = (osk_col + 1) % OSK_COLS;
-                if (osk_col == 0) osk_row = (osk_row + 1) % OSK_ROWS;
-            }
+        while (osk_rows[osk_row][osk_col] == ' ') {
+            osk_col = (osk_col + 1) % OSK_COLS;
+            if (osk_col == 0) osk_row = (osk_row + 1) % OSK_ROWS;
         }
         SDL_Delay(16);
     }
@@ -592,6 +567,7 @@ static bool editor_file_browser(App* app, ApplicationContext* ctx, char* out_nam
         bool got_input = false;
         while (!got_input) {
             while (SDL_PollEvent(&e)) {
+                app_handle_hotplug(app, ctx, &e);
                 if (e.type == SDL_QUIT) return false;
                 if (e.type == SDL_KEYDOWN && !e.key.repeat) {
                     got_input = true;
@@ -688,6 +664,7 @@ void app_run_editor(App* app, ApplicationContext* ctx) {
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            app_handle_hotplug(app, ctx, &e);
             if (e.type == SDL_QUIT) { running = false; break; }
 
             // --- Pause menu ---

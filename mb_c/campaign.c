@@ -86,6 +86,7 @@ void app_run_campaign(App* app, ApplicationContext* ctx) {
             render_shop_ui(app, ctx, selected, sp_players, sp_panels);
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
+                app_handle_hotplug(app, ctx, &e);
                 if (e.type == SDL_QUIT) { app->player_lives = 0; shopping = false; break; }
                 ActionType act = input_map_event(&e, 0, &app->input_config);
                 bool start_pressed = false;

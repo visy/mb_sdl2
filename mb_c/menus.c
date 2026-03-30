@@ -254,6 +254,11 @@ static void render_options_full(App* app, ApplicationContext* ctx, GameOptions* 
     int cx, cy; opt_cursor_pos(selected, &cx, &cy);
     glyphs_render(&app->glyphs, ctx->renderer, cx, cy, GLYPH_ARROW_POINTER);
     for (int i = 0; i < OPT_COUNT; i++) render_option_value(app, ctx, o, (OptionItem)i);
+    // Strikethrough "Redefine keys" entry
+    int ry = OPT_MENU_Y + 5 + OPT_REDEFINE_KEYS * OPT_ITEM_H + 6;
+    SDL_SetRenderDrawColor(ctx->renderer, 200, 0, 0, 255);
+    SDL_RenderDrawLine(ctx->renderer, OPT_MENU_X + 130, ry, OPT_MENU_X + 264, ry);
+    SDL_RenderDrawLine(ctx->renderer, OPT_MENU_X + 130, ry + 1, OPT_MENU_X + 264, ry + 1);
     SDL_SetRenderTarget(ctx->renderer, NULL);
 }
 
@@ -387,28 +392,45 @@ static void app_run_level_select(App* app, ApplicationContext* ctx) {
 
     bool running = true;
     while (running) {
-        SDL_Scancode key = context_wait_key_pressed(ctx);
-        if (key == SDL_SCANCODE_LEFT || key == SDL_SCANCODE_KP_4) {
-            cursor = (cursor + total - 1) % total;
-        } else if (key == SDL_SCANCODE_RIGHT || key == SDL_SCANCODE_KP_6) {
-            cursor = (cursor + 1) % total;
-        } else if (key == SDL_SCANCODE_UP || key == SDL_SCANCODE_KP_8) {
-            cursor = (cursor - 8 + total) % total;
-        } else if (key == SDL_SCANCODE_DOWN || key == SDL_SCANCODE_KP_2) {
-            cursor = (cursor + 8) % total;
-        } else if (key == SDL_SCANCODE_RETURN || key == SDL_SCANCODE_KP_ENTER) {
-            if (pick_count < max_picks && pick_count < 128) {
-                picks[pick_count++] = cursor;
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            app_handle_hotplug(app, ctx, &e);
+            if (e.type == SDL_QUIT) { running = false; break; }
+
+            ActionType act = input_map_event(&e, 0, &app->input_config);
+            bool nav = false;
+
+            if (act == ACT_LEFT) { cursor = (cursor + total - 1) % total; nav = true; }
+            else if (act == ACT_RIGHT) { cursor = (cursor + 1) % total; nav = true; }
+            else if (act == ACT_UP) { cursor = (cursor - 8 + total) % total; nav = true; }
+            else if (act == ACT_DOWN) { cursor = (cursor + 8) % total; nav = true; }
+            else if (act == ACT_ACTION || (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER))) {
+                // Add level to selection
+                if (pick_count < max_picks && pick_count < 128) {
+                    picks[pick_count++] = cursor;
+                    nav = true;
+                }
             }
-        } else if (key == SDL_SCANCODE_F1) {
-            // Fill remaining with random levels
-            while (pick_count < max_picks && pick_count < 128) {
-                picks[pick_count++] = rand() % total;
+            else if (act == ACT_CYCLE || (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F1)) {
+                // Fill remaining with random
+                while (pick_count < max_picks && pick_count < 128)
+                    picks[pick_count++] = rand() % total;
+                nav = true;
             }
-        } else if (key == SDL_SCANCODE_ESCAPE) {
-            running = false;
+            else if (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
+                // Accept current selection, fill remaining with random non-selected
+                while (pick_count < max_picks && pick_count < 128)
+                    picks[pick_count++] = rand() % total;
+                running = false;
+                nav = true;
+            }
+            else if (act == ACT_STOP || act == ACT_PAUSE || (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE)) {
+                running = false;
+            }
+
+            if (nav) render_level_grid(app, ctx, cursor, picks, pick_count);
         }
-        render_level_grid(app, ctx, cursor, picks, pick_count);
+        SDL_Delay(16);
     }
     context_animate(ctx, ANIMATION_FADE_DOWN, 7);
 
@@ -429,6 +451,7 @@ void app_run_options(App* app, ApplicationContext* ctx) {
         while (navigating) {
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
+                app_handle_hotplug(app, ctx, &e);
                 if (e.type == SDL_QUIT) { navigating = false; selected = OPT_MAIN_MENU; break; }
                 ActionType act = input_map_event(&e, 0, &app->input_config);
                 bool enter_pressed = (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER))
@@ -464,7 +487,7 @@ void app_run_options(App* app, ApplicationContext* ctx) {
                     else if (selected == OPT_REDEFINE_KEYS) navigating = false;
                 } else if (act == ACT_STOP || esc_pressed) {
                     navigating = false; selected = OPT_MAIN_MENU;
-                } else if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_D) {
+                } else if (act == ACT_CYCLE || (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_D)) {
                     o->cash = 750; o->treasures = 45; o->rounds = 15;
                     o->round_time_secs = 420; o->players = 2; o->speed = 100;
                     o->bomb_damage = 100; o->darkness = false; o->free_market = false;

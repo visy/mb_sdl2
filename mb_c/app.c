@@ -15,6 +15,40 @@
 #include <ctype.h>
 #include <time.h>
 
+// ==================== Gamepad Hotplug ====================
+
+void app_handle_hotplug(App* app, ApplicationContext* ctx, const SDL_Event* e) {
+    if (e->type == SDL_CONTROLLERDEVICEADDED && ctx->num_pads < 4) {
+        if (SDL_IsGameController(e->cdevice.which)) {
+            SDL_GameController* gc = SDL_GameControllerOpen(e->cdevice.which);
+            if (gc) {
+                ctx->pads[ctx->num_pads++] = gc;
+                input_assign_pads(&app->input_config, ctx->pads, ctx->num_pads);
+                // Build notification: show which player each pad is assigned to
+                char msg[128] = "";
+                int pos = 0;
+                for (int p = 0; p < 4 && pos < 100; p++) {
+                    if (app->input_config.pad_id[p] >= 0)
+                        pos += snprintf(msg + pos, sizeof(msg) - pos, "P%d:PAD%d ", p + 1, p);
+                }
+                if (pos > 0) context_notify(ctx, msg, 3000);
+            }
+        }
+    } else if (e->type == SDL_CONTROLLERDEVICEREMOVED) {
+        for (int i = 0; i < ctx->num_pads; i++) {
+            SDL_Joystick* joy = SDL_GameControllerGetJoystick(ctx->pads[i]);
+            if (joy && SDL_JoystickInstanceID(joy) == e->cdevice.which) {
+                SDL_GameControllerClose(ctx->pads[i]);
+                for (int j = i; j < ctx->num_pads - 1; j++) ctx->pads[j] = ctx->pads[j + 1];
+                ctx->pads[--ctx->num_pads] = NULL;
+                break;
+            }
+        }
+        input_assign_pads(&app->input_config, ctx->pads, ctx->num_pads);
+        context_notify(ctx, "GAMEPAD DISCONNECTED", 3000);
+    }
+}
+
 // ==================== Pause Menu ====================
 
 bool is_pause_event(const SDL_Event* e, InputConfig* config) {
@@ -101,6 +135,7 @@ static PauseChoice pause_menu_impl(App* app, ApplicationContext* ctx, PauseConte
 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            app_handle_hotplug(app, ctx, &e);
             if (e.type == SDL_QUIT) { result = PAUSE_END_GAME; running = false; break; }
             if (e.type == SDL_KEYDOWN && e.key.repeat) continue;
             if (is_pause_event(&e, &app->input_config)) { running = false; break; }
@@ -180,6 +215,7 @@ bool app_init(App* app, ApplicationContext* ctx) {
     char font_path[MAX_PATH];
     snprintf(font_path, sizeof(font_path), "%s%cFONTTI.FON", ctx->game_dir, PATH_SEP);
     if (!load_font(ctx->renderer, font_path, &app->font)) return false;
+    ctx->notify_font = &app->font;
 
     load_registered(ctx->game_dir, app->registered, sizeof(app->registered));
 
@@ -339,6 +375,7 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
         while (navigating) {
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
+                app_handle_hotplug(app, ctx, &e);
                 if (e.type == SDL_QUIT) { selected = MENU_QUIT; navigating = false; running = false; break; }
                 if (e.type == SDL_KEYDOWN && e.key.repeat) continue;
                 ActionType act = input_map_event(&e, 0, &app->input_config);

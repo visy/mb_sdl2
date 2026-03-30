@@ -3,6 +3,7 @@
 
 #include "args.h"
 #include "images.h"
+#include "fonts.h"
 #include <stdbool.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_mixer.h>
@@ -27,6 +28,9 @@ typedef struct {
     char current_music[64];
     SDL_GameController* pads[4];
     int num_pads;
+    Font* notify_font; // set by app_init for notification rendering
+    char notify_text[128];
+    Uint32 notify_until; // SDL_GetTicks() deadline, 0 = inactive
 } ApplicationContext;
 
 
@@ -52,6 +56,9 @@ bool context_play_music_at(ApplicationContext* ctx, const char* filename, int or
 void context_linger_music_start(ApplicationContext* ctx);
 void context_linger_music_end(ApplicationContext* ctx);
 void context_stop_music(ApplicationContext* ctx);
+
+// Notifications
+void context_notify(ApplicationContext* ctx, const char* text, int duration_ms);
 
 // Sound Effects
 Mix_Chunk* context_load_sample(ApplicationContext* ctx, const char* filename);

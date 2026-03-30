@@ -127,6 +127,7 @@ static int app_run_net_shop(App* app, ApplicationContext* ctx) {
             // Input: only process if local player is in the active batch and not yet ready
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
+                app_handle_hotplug(app, ctx, &e);
                 if (e.type == SDL_QUIT) { return 0; }
                 if (net->is_server && is_pause_event(&e, &app->input_config)) {
                     PauseChoice pc = pause_menu_net(app, ctx, PAUSE_CTX_SHOP, net);
@@ -284,53 +285,15 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
     char saved_name[16];
     snprintf(saved_name, sizeof(saved_name), "%s", app->player_name[0]);
 
-    // Phase A0: Name entry
+    // Phase A0: Name entry (uses text_entry_dialog for full keyboard+gamepad OSK)
     char net_name[NET_PLAYER_NAME_LEN];
-    snprintf(net_name, sizeof(net_name), "%s", app->player_name[0]);
-    int name_cursor = (int)strlen(net_name);
-    {
-        bool entering_name = true;
-        SDL_StartTextInput();
-        while (entering_name) {
-            SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
-            SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
-            SDL_RenderClear(ctx->renderer);
-            render_text(ctx->renderer, &app->font, 200, 100, white, "NETGAME");
-            render_text(ctx->renderer, &app->font, 160, 140, gray, "ENTER YOUR NAME:");
-            char display[32];
-            snprintf(display, sizeof(display), "%s_", net_name);
-            render_text(ctx->renderer, &app->font, 200, 165, yellow, display);
-            render_text(ctx->renderer, &app->font, 160, 220, gray, "TYPE NAME  ENTER CONFIRM  ESC BACK");
-            SDL_SetRenderTarget(ctx->renderer, NULL);
-            context_present(ctx);
-
-            SDL_Event e;
-            while (SDL_PollEvent(&e)) {
-                if (e.type == SDL_QUIT) { SDL_StopTextInput(); net_shutdown(); return; }
-                if (e.type == SDL_KEYDOWN) {
-                    if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) { SDL_StopTextInput(); net_shutdown(); return; }
-                    if (e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE && name_cursor > 0) {
-                        net_name[--name_cursor] = '\0';
-                    }
-                    if (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER) {
-                        if (name_cursor > 0) entering_name = false;
-                    }
-                }
-                if (e.type == SDL_TEXTINPUT && name_cursor < NET_PLAYER_NAME_LEN - 1) {
-                    char ch = e.text.text[0];
-                    if (ch >= 32 && ch < 127) {
-                        net_name[name_cursor++] = ch;
-                        net_name[name_cursor] = '\0';
-                    }
-                }
-            }
-            SDL_Delay(16);
-        }
-        SDL_StopTextInput();
+    if (!text_entry_dialog(app, ctx, net_name, NET_PLAYER_NAME_LEN, "NETGAME - ENTER YOUR NAME:", app->player_name[0], 0)) {
+        net_shutdown();
+        return;
     }
 
     // Phase A: Host/Join selection
-    int choice = 0; // 0=host, 1=join
+    int choice = 0;
     bool selecting = true;
     while (selecting) {
         SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
@@ -339,19 +302,18 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
         render_text(ctx->renderer, &app->font, 200, 100, white, "NETGAME");
         render_text(ctx->renderer, &app->font, 200, 140, choice == 0 ? yellow : gray, "> HOST GAME");
         render_text(ctx->renderer, &app->font, 200, 160, choice == 1 ? yellow : gray, "> JOIN GAME");
-        render_text(ctx->renderer, &app->font, 160, 220, gray, "UP/DOWN SELECT  ENTER CONFIRM  ESC BACK");
         SDL_SetRenderTarget(ctx->renderer, NULL);
         context_present(ctx);
 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            app_handle_hotplug(app, ctx, &e);
             if (e.type == SDL_QUIT) { net_shutdown(); return; }
-            if (e.type == SDL_KEYDOWN) {
-                if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) { net_shutdown(); return; }
-                if (e.key.keysym.scancode == SDL_SCANCODE_UP) choice = 0;
-                if (e.key.keysym.scancode == SDL_SCANCODE_DOWN) choice = 1;
-                if (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER) selecting = false;
-            }
+            ActionType act = input_map_event(&e, 0, &app->input_config);
+            if (act == ACT_UP) choice = 0;
+            else if (act == ACT_DOWN) choice = 1;
+            else if (act == ACT_ACTION || (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER))) selecting = false;
+            else if (act == ACT_STOP || act == ACT_PAUSE || (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE)) { net_shutdown(); return; }
         }
         SDL_Delay(16);
     }
@@ -375,8 +337,8 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
         snprintf(net->player_names[0], NET_PLAYER_NAME_LEN, "%s", net_name);
     } else {
         // Join - hostname entry
-        char hostname[128] = "localhost";
-        int cursor = (int)strlen(hostname);
+        char hostname[128] = "";
+        int cursor = 0;
         bool entering = true;
         bool connecting = false;
         SDL_StartTextInput();
@@ -389,7 +351,7 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
             char display[140];
             snprintf(display, sizeof(display), "%s_", hostname);
             render_text(ctx->renderer, &app->font, 200, 130, yellow, connecting ? "CONNECTING..." : display);
-            render_text(ctx->renderer, &app->font, 160, 200, gray, "TYPE ADDRESS  ENTER CONNECT  ESC BACK");
+            render_text(ctx->renderer, &app->font, 120, 200, gray, "TYPE ADDRESS  CTRL+V PASTE  ENTER CONNECT  ESC BACK");
             SDL_SetRenderTarget(ctx->renderer, NULL);
             context_present(ctx);
 
@@ -414,6 +376,7 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
 
             SDL_Event e;
             while (SDL_PollEvent(&e)) {
+                app_handle_hotplug(app, ctx, &e);
                 if (e.type == SDL_QUIT) { SDL_StopTextInput(); net_shutdown(); return; }
                 if (e.type == SDL_KEYDOWN) {
                     if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
@@ -421,11 +384,21 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
                         net_shutdown();
                         return;
                     }
-                    if (e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE && cursor > 0) {
+                    if (e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE && cursor > 0)
                         hostname[--cursor] = '\0';
-                    }
-                    if (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER) {
+                    if (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER)
                         connecting = true;
+                    // Ctrl+V paste from clipboard
+                    if (e.key.keysym.scancode == SDL_SCANCODE_V && (SDL_GetModState() & KMOD_CTRL)) {
+                        char* clip = SDL_GetClipboardText();
+                        if (clip) {
+                            for (int i = 0; clip[i] && cursor < 126; i++) {
+                                if (clip[i] >= 32 && clip[i] < 127)
+                                    hostname[cursor++] = clip[i];
+                            }
+                            hostname[cursor] = '\0';
+                            SDL_free(clip);
+                        }
                     }
                 }
                 if (e.type == SDL_TEXTINPUT && cursor < 126) {
@@ -434,6 +407,13 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
                         memcpy(hostname + cursor, e.text.text, len);
                         cursor += len;
                         hostname[cursor] = '\0';
+                    }
+                }
+                // Gamepad: Start=connect, B=back
+                if (e.type == SDL_CONTROLLERBUTTONDOWN) {
+                    if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) connecting = true;
+                    if (e.cbutton.button == SDL_CONTROLLER_BUTTON_B) {
+                        SDL_StopTextInput(); net_shutdown(); return;
                     }
                 }
             }
@@ -478,26 +458,35 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
             }
         }
 
-        if (net->is_server)
-            render_text(ctx->renderer, &app->font, 140, 340, gray, "ENTER=TOGGLE READY  ESC=QUIT");
-        else
-            render_text(ctx->renderer, &app->font, 140, 340, gray, "ENTER=TOGGLE READY  ESC=DISCONNECT");
+        render_text(ctx->renderer, &app->font, 140, 340, gray,
+            net->is_server ? "A/ENTER=READY  B/ESC=QUIT" : "A/ENTER=READY  B/ESC=DISCONNECT");
 
         context_present(ctx);
 
         // Input
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            app_handle_hotplug(app, ctx, &e);
             if (e.type == SDL_QUIT) { net_disconnect(net); net_shutdown(); app->options = saved_options; snprintf(app->player_name[0], sizeof(app->player_name[0]), "%s", saved_name); return; }
-            if (e.type == SDL_KEYDOWN) {
-                if (e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) {
-                    net_disconnect(net);
-                    net_shutdown();
-                    app->options = saved_options;
-                    snprintf(app->player_name[0], sizeof(app->player_name[0]), "%s", saved_name);
-                    return;
-                }
-                if (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER) {
+
+            // Quit/disconnect via keyboard or gamepad
+            bool quit_lobby = false;
+            if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_ESCAPE) quit_lobby = true;
+            { ActionType act = input_map_event(&e, 0, &app->input_config);
+              if (act == ACT_STOP || act == ACT_PAUSE) quit_lobby = true; }
+            if (quit_lobby) {
+                net_disconnect(net);
+                net_shutdown();
+                app->options = saved_options;
+                snprintf(app->player_name[0], sizeof(app->player_name[0]), "%s", saved_name);
+                return;
+            }
+
+            // Toggle ready via keyboard or gamepad
+            bool toggle_ready = false;
+            if (e.type == SDL_KEYDOWN && (e.key.keysym.scancode == SDL_SCANCODE_RETURN || e.key.keysym.scancode == SDL_SCANCODE_KP_ENTER)) toggle_ready = true;
+            if (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_A) toggle_ready = true;
+            if (toggle_ready) {
                     net->player_ready[net->local_player] = !net->player_ready[net->local_player];
                     if (net->is_server) {
                         // Broadcast ready update
@@ -553,7 +542,6 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
                     }
                 }
             }
-        }
 
         // Poll network
         NetMessage net_msg;
