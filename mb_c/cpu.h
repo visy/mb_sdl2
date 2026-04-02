@@ -9,6 +9,10 @@ static inline bool is_cpu_player(const App* app, int p) {
     return app->roster.identities[p] == ROSTER_CPU;
 }
 
+// Initialize CPU personality for a player slot and write name into buf.
+// Call this when assigning a CPU to a player slot.
+void cpu_assign(int p, char* name_buf, int name_max);
+
 // Generate one frame of CPU input flags (NET_INPUT_* format)
 uint8_t cpu_generate_input(App* app, World* world, int p);
 

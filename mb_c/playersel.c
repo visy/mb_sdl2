@@ -435,11 +435,11 @@ bool app_run_player_select(App* app, ApplicationContext* ctx) {
         SDL_Delay(16);
     }
 
-    // Copy selected names to player_name slots
+    // Copy selected names to player_name slots; assign CPU personalities
     for (int i = 0; i < num_players; i++) {
         int8_t ri = app->roster.identities[i];
         if (ri == ROSTER_CPU)
-            snprintf(app->player_name[i], sizeof(app->player_name[i]), "CPU");
+            cpu_assign(i, app->player_name[i], sizeof(app->player_name[i]));
         else if (ri >= 0 && app->roster.entries[ri].active)
             snprintf(app->player_name[i], sizeof(app->player_name[i]), "%s", app->roster.entries[ri].name);
     }

@@ -2378,18 +2378,17 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
         // Time bar (multiplayer only) - draw to buffer before present
         if (!world.campaign_mode && round_time_ms > 0) {
             Uint32 elapsed = SDL_GetTicks() - round_start;
-            int width = (int)((635ULL * elapsed) / round_time_ms);
-            if (width > 635) width = 635;
+            int bar_x = 3, bar_w = 634;
+            int width = (int)((uint64_t)bar_w * elapsed / round_time_ms);
+            if (width > bar_w) width = bar_w;
             SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
-            // Background bar
             SDL_Color bg_c = app->players.palette[6];
             SDL_SetRenderDrawColor(ctx->renderer, bg_c.r, bg_c.g, bg_c.b, 255);
-            SDL_Rect bg_bar = {2, 473, 635, 5};
+            SDL_Rect bg_bar = {bar_x, 473, bar_w, 5};
             SDL_RenderFillRect(ctx->renderer, &bg_bar);
-            // Progress bar (grows from right)
             SDL_Color fg_c = app->players.palette[0];
             SDL_SetRenderDrawColor(ctx->renderer, fg_c.r, fg_c.g, fg_c.b, 255);
-            SDL_Rect fg_bar = {636 - width, 473, width, 5};
+            SDL_Rect fg_bar = {bar_x + bar_w - width, 473, width, 5};
             SDL_RenderFillRect(ctx->renderer, &fg_bar);
             SDL_SetRenderTarget(ctx->renderer, NULL);
 
