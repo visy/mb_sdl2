@@ -136,16 +136,22 @@ void identities_load(PlayerRoster* roster, const char* game_dir) {
     if (!f) return;
     uint8_t buf[4];
     if (fread(buf, 1, 4, f) == 4) {
-        for (int i = 0; i < MAX_PLAYERS; i++)
-            roster->identities[i] = buf[i] == 0 ? -1 : (int8_t)(buf[i] - 1);
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            if (buf[i] == 255) roster->identities[i] = ROSTER_CPU;
+            else if (buf[i] == 0) roster->identities[i] = -1;
+            else roster->identities[i] = (int8_t)(buf[i] - 1);
+        }
     }
     fclose(f);
 }
 
 void identities_save(const PlayerRoster* roster, const char* game_dir) {
     uint8_t buf[4];
-    for (int i = 0; i < MAX_PLAYERS; i++)
-        buf[i] = roster->identities[i] < 0 ? 0 : (uint8_t)(roster->identities[i] + 1);
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (roster->identities[i] == ROSTER_CPU) buf[i] = 255;
+        else if (roster->identities[i] < 0) buf[i] = 0;
+        else buf[i] = (uint8_t)(roster->identities[i] + 1);
+    }
     char path[MAX_PATH];
     snprintf(path, sizeof(path), "%s%cIDENTIFY.DAT", game_dir, PATH_SEP);
     FILE* f = fopen(path, "wb");

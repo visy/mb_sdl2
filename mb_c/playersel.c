@@ -1,4 +1,5 @@
 #include "playersel.h"
+#include "cpu.h"
 #include "editor.h"
 #include "persist.h"
 #include "fonts.h"
@@ -13,20 +14,48 @@
 #define PS_LEFT_X 44
 #define PS_LEFT_Y 35
 
+// Roster shows 31 name slots + CPU entry; CPU is at visual slot 31
+#define PS_NAME_SLOTS 31
+#define PS_TOTAL_ENTRIES (ROSTER_MAX + 1)
+#define PS_CPU_SLOT ROSTER_MAX
+
 static void ps_render_right_pane(App* app, ApplicationContext* ctx) {
     SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
     SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
-    SDL_Rect r = {PS_RIGHT_X + 2, PS_RIGHT_Y + 1, 198, 256};
+    SDL_Rect r = {PS_RIGHT_X + 2, PS_RIGHT_Y + 1, 198, PS_NAME_SLOTS * 8};
     SDL_RenderFillRect(ctx->renderer, &r);
     SDL_Color white = app->select_players.palette[1];
     SDL_Color gray = app->select_players.palette[3];
-    for (int i = 0; i < ROSTER_MAX; i++) {
+    SDL_Color cyan = {0, 200, 200, 255};
+    for (int i = 0; i < PS_NAME_SLOTS && i < ROSTER_MAX; i++) {
         int x = PS_RIGHT_X + 2, y = PS_RIGHT_Y + i * 8 + 1;
         if (app->roster.entries[i].active)
             render_text(ctx->renderer, &app->font, x, y, white, app->roster.entries[i].name);
         else
             render_text(ctx->renderer, &app->font, x, y, gray, "-");
     }
+    // CPU entry one line above where slot 32 would be
+    render_text(ctx->renderer, &app->font, PS_RIGHT_X + 2, PS_RIGHT_Y + PS_NAME_SLOTS * 8 + 1, cyan, "CPU");
+    SDL_SetRenderTarget(ctx->renderer, NULL);
+}
+
+static void ps_render_cpu_info(App* app, ApplicationContext* ctx) {
+    SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+    SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
+    // Clear same areas as ps_render_stats
+    for (int row = 0; row < 6; row++)
+        for (int col = 0; col < 2; col++) {
+            SDL_Rect r = {col * 146 + 64, row * 24 + 328, 95, 10};
+            SDL_RenderFillRect(ctx->renderer, &r);
+        }
+    SDL_Rect hr = {367, 328, 198, 125};
+    SDL_RenderFillRect(ctx->renderer, &hr);
+    // Draw CPU info in the graph area (right side)
+    SDL_Color cyan = {0, 200, 200, 255};
+    render_text(ctx->renderer, &app->font, 375, 350, cyan, "AI controlled");
+    render_text(ctx->renderer, &app->font, 375, 366, cyan, "CPU player");
+    render_text(ctx->renderer, &app->font, 375, 394, cyan, "Shops and fights");
+    render_text(ctx->renderer, &app->font, 375, 410, cyan, "autonomously");
     SDL_SetRenderTarget(ctx->renderer, NULL);
 }
 
@@ -42,7 +71,7 @@ static void ps_render_stats(App* app, ApplicationContext* ctx, const RosterInfo*
             SDL_RenderFillRect(ctx->renderer, &r);
         }
     // Clear history area
-    SDL_Rect hr = {367, 328, 198, 130};
+    SDL_Rect hr = {367, 328, 198, 125};
     SDL_RenderFillRect(ctx->renderer, &hr);
 
     if (!stats) { SDL_SetRenderTarget(ctx->renderer, NULL); return; }
@@ -122,7 +151,10 @@ static void ps_render_left_names(App* app, ApplicationContext* ctx, int num_play
         SDL_RenderFillRect(ctx->renderer, &r);
         if (p < num_players) {
             int8_t ri = app->roster.identities[p];
-            if (ri >= 0 && app->roster.entries[ri].active)
+            if (ri == ROSTER_CPU) {
+                SDL_Color cyan = {0, 200, 200, 255};
+                render_text(ctx->renderer, &app->font, 120, p * 53 + 41, cyan, "CPU");
+            } else if (ri >= 0 && app->roster.entries[ri].active)
                 render_text(ctx->renderer, &app->font, 120, p * 53 + 41, color, app->roster.entries[ri].name);
         }
     }
@@ -143,16 +175,21 @@ static void ps_render_shovel(App* app, ApplicationContext* ctx, int prev, int cu
     SDL_SetRenderTarget(ctx->renderer, NULL);
 }
 
+static int ps_arrow_y(int pos) {
+    // CPU slot (ROSTER_MAX=32) displays at visual row PS_NAME_SLOTS (31)
+    int row = (pos == PS_CPU_SLOT) ? PS_NAME_SLOTS : pos;
+    return row * 8 + PS_RIGHT_Y;
+}
+
 static void ps_render_arrow(App* app, ApplicationContext* ctx, int pos) {
     SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
-    int y = pos * 8 + PS_RIGHT_Y;
-    glyphs_render(&app->glyphs, ctx->renderer, PS_RIGHT_X - 37, y, GLYPH_ARROW_POINTER);
+    glyphs_render(&app->glyphs, ctx->renderer, PS_RIGHT_X - 37, ps_arrow_y(pos), GLYPH_ARROW_POINTER);
     SDL_SetRenderTarget(ctx->renderer, NULL);
 }
 
 static void ps_clear_arrow(App* app __attribute__((unused)), ApplicationContext* ctx, int pos) {
     SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
-    int y = pos * 8 + PS_RIGHT_Y;
+    int y = ps_arrow_y(pos);
     int w, h; glyphs_dimensions(GLYPH_ARROW_POINTER, &w, &h);
     SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
     SDL_Rect r = {PS_RIGHT_X - 37, y, w, h};
@@ -188,10 +225,10 @@ static bool ps_edit_name(App* app, ApplicationContext* ctx, int roster_idx, int 
     return true;
 }
 
-// Name select sub-menu: browse 32 roster slots, select or create
+// Name select sub-menu: browse 32 roster slots + CPU entry, select or create
 // A / Enter on existing = select it. A / Enter on empty = create new name.
 // B / Esc = cancel. X / Delete = delete entry.
-// Returns roster index selected, or -1 if cancelled
+// Returns roster index selected, ROSTER_CPU for CPU, or -1 if cancelled
 static int ps_name_select(App* app, ApplicationContext* ctx, int num_players) {
     int arrow = 0;
     ps_render_arrow(app, ctx, arrow);
@@ -201,17 +238,23 @@ static int ps_name_select(App* app, ApplicationContext* ctx, int num_players) {
     int result = -1;
     bool running = true;
 
-    #define NS_MOVE_UP()   arrow = (arrow + ROSTER_MAX - 1) % ROSTER_MAX
-    #define NS_MOVE_DOWN() arrow = (arrow + 1) % ROSTER_MAX
+    #define NS_MOVE_UP()   do { arrow = (arrow + PS_TOTAL_ENTRIES - 1) % PS_TOTAL_ENTRIES; \
+        if (arrow >= PS_NAME_SLOTS && arrow < PS_CPU_SLOT) arrow = PS_NAME_SLOTS - 1; } while(0)
+    #define NS_MOVE_DOWN() do { arrow = (arrow + 1) % PS_TOTAL_ENTRIES; \
+        if (arrow >= PS_NAME_SLOTS && arrow < PS_CPU_SLOT) arrow = PS_CPU_SLOT; } while(0)
     #define NS_DELETE() do { \
-        app->roster.entries[arrow].active = false; \
-        for (int i = 0; i < MAX_PLAYERS; i++) \
-            if (app->roster.identities[i] == arrow) app->roster.identities[i] = -1; \
-        ps_render_right_pane(app, ctx); \
-        ps_render_stats(app, ctx, NULL); \
-        context_present(ctx); } while(0)
+        if (arrow < ROSTER_MAX) { \
+            app->roster.entries[arrow].active = false; \
+            for (int i = 0; i < MAX_PLAYERS; i++) \
+                if (app->roster.identities[i] == arrow) app->roster.identities[i] = -1; \
+            ps_render_right_pane(app, ctx); \
+            ps_render_stats(app, ctx, NULL); \
+            context_present(ctx); \
+        } } while(0)
     #define NS_SELECT_OR_EDIT() do { \
-        if (app->roster.entries[arrow].active) { \
+        if (arrow == PS_CPU_SLOT) { \
+            result = ROSTER_CPU; running = false; \
+        } else if (app->roster.entries[arrow].active) { \
             result = arrow; running = false; \
         } else { \
             ps_edit_name(app, ctx, arrow, num_players); \
@@ -220,6 +263,10 @@ static int ps_name_select(App* app, ApplicationContext* ctx, int num_players) {
             ps_render_stats(app, ctx, app->roster.entries[arrow].active ? &app->roster.entries[arrow] : NULL); \
             context_present(ctx); \
         } } while(0)
+    #define NS_RENDER_ARROW_STATS() do { \
+        if (arrow == PS_CPU_SLOT) ps_render_cpu_info(app, ctx); \
+        else ps_render_stats(app, ctx, arrow < ROSTER_MAX && app->roster.entries[arrow].active ? &app->roster.entries[arrow] : NULL); \
+        } while(0)
 
     while (running) {
         SDL_Event e;
@@ -240,8 +287,8 @@ static int ps_name_select(App* app, ApplicationContext* ctx, int num_players) {
             // Keyboard extras (LEFT to select existing, DELETE to remove)
             if (e.type == SDL_KEYDOWN && !e.key.repeat) {
                 if (e.key.keysym.scancode == SDL_SCANCODE_LEFT) {
-                    if (app->roster.entries[arrow].active) result = arrow;
-                    running = false;
+                    if (arrow == PS_CPU_SLOT) { result = ROSTER_CPU; running = false; }
+                    else if (app->roster.entries[arrow].active) { result = arrow; running = false; }
                 }
                 else if (e.key.keysym.scancode == SDL_SCANCODE_BACKSPACE || e.key.keysym.scancode == SDL_SCANCODE_DELETE)
                     NS_DELETE();
@@ -252,18 +299,18 @@ static int ps_name_select(App* app, ApplicationContext* ctx, int num_players) {
             if (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_X)
                 NS_DELETE();
 
-            if (e.type == SDL_TEXTINPUT) {
+            if (e.type == SDL_TEXTINPUT && arrow < ROSTER_MAX) {
                 ps_edit_name(app, ctx, arrow, num_players);
                 if (app->roster.entries[arrow].active) { result = arrow; running = false; }
                 ps_render_arrow(app, ctx, arrow);
-                ps_render_stats(app, ctx, app->roster.entries[arrow].active ? &app->roster.entries[arrow] : NULL);
+                NS_RENDER_ARROW_STATS();
                 context_present(ctx);
             }
 
             if (nav && prev != arrow && running) {
                 ps_clear_arrow(app, ctx, prev);
                 ps_render_arrow(app, ctx, arrow);
-                ps_render_stats(app, ctx, app->roster.entries[arrow].active ? &app->roster.entries[arrow] : NULL);
+                NS_RENDER_ARROW_STATS();
                 context_present(ctx);
             }
         }
@@ -273,6 +320,7 @@ static int ps_name_select(App* app, ApplicationContext* ctx, int num_players) {
     #undef NS_MOVE_DOWN
     #undef NS_DELETE
     #undef NS_SELECT_OR_EDIT
+    #undef NS_RENDER_ARROW_STATS
     ps_clear_arrow(app, ctx, arrow);
     context_present(ctx);
     return result;
@@ -299,7 +347,9 @@ bool app_run_player_select(App* app, ApplicationContext* ctx) {
     ps_render_left_names(app, ctx, num_players);
     ps_render_shovel(app, ctx, active, active);
     // Show stats for current active slot
-    {
+    if (active < 4 && app->roster.identities[active] == ROSTER_CPU)
+        ps_render_cpu_info(app, ctx);
+    else {
         const RosterInfo* st = NULL;
         if (active < 4 && app->roster.identities[active] >= 0)
             st = &app->roster.entries[app->roster.identities[active]];
@@ -336,28 +386,36 @@ bool app_run_player_select(App* app, ApplicationContext* ctx) {
                 if (active == 4) {
                     bool all_ok = true;
                     for (int i = 0; i < num_players; i++)
-                        if (app->roster.identities[i] < 0) { all_ok = false; break; }
+                        if (app->roster.identities[i] == -1) { all_ok = false; break; }
                     if (all_ok) { result = true; running = false; }
                 } else {
                     int sel = ps_name_select(app, ctx, num_players);
-                    if (sel >= 0) app->roster.identities[active] = (int8_t)sel;
-                    // Full redraw after returning from sub-menu
+                    if (sel == ROSTER_CPU) app->roster.identities[active] = ROSTER_CPU;
+                    else if (sel >= 0) app->roster.identities[active] = (int8_t)sel;
                     ps_full_redraw(app, ctx, num_players);
                     ps_render_shovel(app, ctx, active, active);
-                    const RosterInfo* st = NULL;
-                    if (app->roster.identities[active] >= 0)
-                        st = &app->roster.entries[app->roster.identities[active]];
-                    ps_render_stats(app, ctx, st);
+                    if (app->roster.identities[active] == ROSTER_CPU)
+                        ps_render_cpu_info(app, ctx);
+                    else {
+                        const RosterInfo* st = NULL;
+                        if (app->roster.identities[active] >= 0)
+                            st = &app->roster.entries[app->roster.identities[active]];
+                        ps_render_stats(app, ctx, st);
+                    }
                 }
             }
             else if (act == ACT_STOP || act == ACT_PAUSE) { running = false; }
 
             if (prev != active) {
                 ps_render_shovel(app, ctx, prev, active);
-                const RosterInfo* st = NULL;
-                if (active < 4 && app->roster.identities[active] >= 0)
-                    st = &app->roster.entries[app->roster.identities[active]];
-                ps_render_stats(app, ctx, st);
+                if (active < 4 && app->roster.identities[active] == ROSTER_CPU)
+                    ps_render_cpu_info(app, ctx);
+                else {
+                    const RosterInfo* st = NULL;
+                    if (active < 4 && app->roster.identities[active] >= 0)
+                        st = &app->roster.entries[app->roster.identities[active]];
+                    ps_render_stats(app, ctx, st);
+                }
             }
             context_present(ctx);
 
@@ -380,7 +438,9 @@ bool app_run_player_select(App* app, ApplicationContext* ctx) {
     // Copy selected names to player_name slots
     for (int i = 0; i < num_players; i++) {
         int8_t ri = app->roster.identities[i];
-        if (ri >= 0 && app->roster.entries[ri].active)
+        if (ri == ROSTER_CPU)
+            snprintf(app->player_name[i], sizeof(app->player_name[i]), "CPU");
+        else if (ri >= 0 && app->roster.entries[ri].active)
             snprintf(app->player_name[i], sizeof(app->player_name[i]), "%s", app->roster.entries[ri].name);
     }
 

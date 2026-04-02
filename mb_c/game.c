@@ -1,4 +1,5 @@
 #include "game.h"
+#include "cpu.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1926,15 +1927,12 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
             + 5 * app->player_inventory[p][EQUIP_DRILL];
     }
 
-    // Clear player start tiles to passage and collect any items there
+    // Collect any items on player start tiles but preserve the original tile
     for (int p = 0; p < world.num_players; p++) {
         int sx = world.actors[p].pos.x / 10;
         int sy = (world.actors[p].pos.y - 30) / 10;
-        if (sx >= 0 && sx < MAP_WIDTH && sy >= 0 && sy < MAP_HEIGHT) {
+        if (sx >= 0 && sx < MAP_WIDTH && sy >= 0 && sy < MAP_HEIGHT)
             player_interact_tile(app, &world, p, sx, sy);
-            world.tiles[sy][sx] = TILE_PASSAGE;
-            world.hits[sy][sx] = 0;
-        }
     }
 
     Uint32 round_start = SDL_GetTicks();
@@ -2021,12 +2019,20 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
                 }
 
                 for (int p = 0; p < world.num_players; ++p) {
+                    if (is_cpu_player(app, p)) continue;
                     ActionType act = input_map_event(&e, p, &app->input_config);
                     if (act != ACT_MAX_PLAYER && act != ACT_PAUSE) {
                         uint8_t flags = action_to_input_flag(act);
                         apply_player_input(app, &world, p, flags);
                     }
                 }
+            }
+
+            // CPU players generate input
+            for (int p = 0; p < world.num_players; ++p) {
+                if (!is_cpu_player(app, p)) continue;
+                uint8_t cpu_input = cpu_generate_input(app, &world, p);
+                if (cpu_input) apply_player_input(app, &world, p, cpu_input);
             }
         }
 

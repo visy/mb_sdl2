@@ -1,4 +1,5 @@
 #include "shop.h"
+#include "cpu.h"
 #include "persist.h"
 #include "fonts.h"
 #include "glyphs.h"
@@ -288,9 +289,10 @@ void app_run_shop(App* app, ApplicationContext* ctx) {
                         if (pc == PAUSE_END_GAME) { quit = true; batch_done = true; }
                         continue;
                     }
-                    // Only active batch players can control the shop
+                    // Only active batch players can control the shop (skip CPU)
                     for (int panel = 0; panel < num_panels; panel++) {
                         int pi = batch[panel];
+                        if (is_cpu_player(app, pi)) continue;
                         ActionType act = input_map_event(&e, pi, &app->input_config);
                         if (ready[panel]) continue;
                         if (act != ACT_MAX_PLAYER) {
@@ -310,6 +312,12 @@ void app_run_shop(App* app, ApplicationContext* ctx) {
                             }
                         }
                     }
+                }
+                // CPU players shop autonomously (one action per frame for visual)
+                for (int panel = 0; panel < num_panels; panel++) {
+                    int pi = batch[panel];
+                    if (is_cpu_player(app, pi) && !ready[panel])
+                        cpu_shop_tick(app, pi, &selected[pi], &ready[panel]);
                 }
                 if (ready[0] && ready[1]) batch_done = true;
                 SDL_Delay(16);

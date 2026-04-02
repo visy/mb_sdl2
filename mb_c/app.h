@@ -39,6 +39,7 @@ typedef enum {
 } Equipment;
 
 #define MAX_PLAYERS 4
+#define ROSTER_CPU -2  // special identity value for CPU players
 #define ROSTER_MAX 32
 #define ROSTER_NAME_MAX 25
 #define ROSTER_RECORD_SIZE 101

@@ -10,17 +10,17 @@ CFLAGS = -Wall -Wextra -O2 -DMB_NET -I. -I$(SDL2_DIR)/include -I$(SDL2_DIR)/incl
 LDFLAGS = -L$(SDL2_DIR)/lib -L$(SDL2_MIXER_DIR)/lib -lmingw32 -lSDL2main -lSDL2 -lSDL2_mixer -lws2_32 -lwinmm
 
 HDRS = context.h args.h images.h error.h app.h fonts.h glyphs.h input.h game.h net.h \
-       compat.h persist.h shop.h editor.h playersel.h campaign.h menus.h netgame.h \
+       compat.h persist.h shop.h editor.h playersel.h campaign.h menus.h netgame.h cpu.h \
        $(S3MPLAY_DIR)/s3m.h $(S3MPLAY_DIR)/s3m_intern.h $(S3MPLAY_DIR)/channel.h $(S3MPLAY_DIR)/pattern.h
 
 SRCS = main.c args.c context.c error.c images.c fonts.c glyphs.c app.c game.c input.c net.c \
-       persist.c shop.c editor.c playersel.c campaign.c menus.c netgame.c \
+       persist.c shop.c editor.c playersel.c campaign.c menus.c netgame.c cpu.c \
        $(S3MPLAY_DIR)/s3m.c $(S3MPLAY_DIR)/s3m_file.c $(S3MPLAY_DIR)/s3m_sound.c \
        $(S3MPLAY_DIR)/channel.c $(S3MPLAY_DIR)/pattern.c $(S3MPLAY_DIR)/s3m_info.c \
        $(ENET_DIR)/callbacks.c $(ENET_DIR)/compress.c $(ENET_DIR)/host.c $(ENET_DIR)/list.c \
        $(ENET_DIR)/packet.c $(ENET_DIR)/peer.c $(ENET_DIR)/protocol.c $(ENET_DIR)/win32.c
 OBJS = main.o args.o context.o error.o images.o fonts.o glyphs.o app.o game.o input.o net.o \
-       persist.o shop.o editor.o playersel.o campaign.o menus.o netgame.o \
+       persist.o shop.o editor.o playersel.o campaign.o menus.o netgame.o cpu.o \
        s3m.o s3m_file.o s3m_sound.o channel.o pattern.o s3m_info.o \
        enet_callbacks.o enet_compress.o enet_host.o enet_list.o \
        enet_packet.o enet_peer.o enet_protocol.o enet_win32.o
