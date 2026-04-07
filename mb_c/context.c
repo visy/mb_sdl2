@@ -179,6 +179,12 @@ bool context_load_spy(ApplicationContext* ctx, const char* filename, TexturePale
     return load_texture(ctx->renderer, path, TEXTURE_FORMAT_SPY, out_palette);
 }
 
+bool context_load_spy_keyed(ApplicationContext* ctx, const char* filename, TexturePalette* out_palette) {
+    char path[MAX_PATH];
+    build_path(ctx->game_dir, filename, path, sizeof(path));
+    return load_texture_keyed(ctx->renderer, path, TEXTURE_FORMAT_SPY, out_palette);
+}
+
 bool context_load_ppm(ApplicationContext* ctx, const char* filename, TexturePalette* out_palette) {
     char path[MAX_PATH];
     build_path(ctx->game_dir, filename, path, sizeof(path));

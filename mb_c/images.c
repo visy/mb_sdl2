@@ -122,7 +122,17 @@ static bool decode_ppm(const uint8_t* data, size_t size, uint32_t* out_width, ui
     return true;
 }
 
+static bool load_texture_impl(SDL_Renderer* renderer, const char* path, TextureFormat format, TexturePalette* out_palette, bool color_key);
+
 bool load_texture(SDL_Renderer* renderer, const char* path, TextureFormat format, TexturePalette* out_palette) {
+    return load_texture_impl(renderer, path, format, out_palette, false);
+}
+
+bool load_texture_keyed(SDL_Renderer* renderer, const char* path, TextureFormat format, TexturePalette* out_palette) {
+    return load_texture_impl(renderer, path, format, out_palette, true);
+}
+
+static bool load_texture_impl(SDL_Renderer* renderer, const char* path, TextureFormat format, TexturePalette* out_palette, bool color_key) {
     FILE* f = fopen(path, "rb");
     if (!f) return false;
     fseek(f, 0, SEEK_END);
@@ -142,11 +152,18 @@ bool load_texture(SDL_Renderer* renderer, const char* path, TextureFormat format
     SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STATIC, width, height);
     if (!texture) { free(rgb_data); return false; }
 
+    uint8_t key_r = out_palette->palette[0].r;
+    uint8_t key_g = out_palette->palette[0].g;
+    uint8_t key_b = out_palette->palette[0].b;
+
     uint32_t* rgba_data = (uint32_t*)malloc(width * height * 4);
     for (uint32_t i = 0; i < width * height; ++i) {
-        rgba_data[i] = (rgb_data[i*3] << 24) | (rgb_data[i*3+1] << 16) | (rgb_data[i*3+2] << 8) | 0xFF;
+        uint8_t r = rgb_data[i*3], g = rgb_data[i*3+1], b = rgb_data[i*3+2];
+        uint8_t a = (color_key && r == key_r && g == key_g && b == key_b) ? 0 : 0xFF;
+        rgba_data[i] = (r << 24) | (g << 16) | (b << 8) | a;
     }
     SDL_UpdateTexture(texture, NULL, rgba_data, width * 4);
+    if (color_key) SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
     free(rgb_data); free(rgba_data);
     out_palette->texture = texture;
     return true;

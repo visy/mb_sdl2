@@ -151,6 +151,7 @@ typedef struct {
     uint32_t player_rounds_won[MAX_PLAYERS];
     int player_inventory[MAX_PLAYERS][EQUIP_TOTAL];
     char player_name[MAX_PLAYERS][16];
+    bool cpu_test_mode;  // F5 from main menu: skip player select, force CPU debug
     int selected_levels[128];
     int selected_level_count;
 

@@ -2011,6 +2011,12 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
 
                 app_handle_hotplug(app, ctx, &e);
 
+                if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F5
+                    && !e.key.repeat) {
+                    cpu_debug_toggle();
+                    continue;
+                }
+
                 if (is_pause_event(&e, &app->input_config)) {
                     PauseChoice pc = pause_menu(app, ctx, PAUSE_CTX_GAMEPLAY);
                     if (pc == PAUSE_EXIT_LEVEL) { running = false; }
@@ -2374,6 +2380,12 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
         world.round_counter++;
 
         render_world(app, ctx, &world);
+
+        if (cpu_debug_enabled()) {
+            SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
+            cpu_debug_render(ctx->renderer, app, &world);
+            SDL_SetRenderTarget(ctx->renderer, NULL);
+        }
 
         // Time bar (multiplayer only) - draw to buffer before present
         if (!world.campaign_mode && round_time_ms > 0) {

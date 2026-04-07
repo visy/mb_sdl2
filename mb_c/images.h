@@ -15,6 +15,7 @@ typedef struct {
 } TexturePalette;
 
 bool load_texture(SDL_Renderer* renderer, const char* path, TextureFormat format, TexturePalette* out_palette);
+bool load_texture_keyed(SDL_Renderer* renderer, const char* path, TextureFormat format, TexturePalette* out_palette);
 void destroy_texture_palette(TexturePalette* tp);
 
 #endif // IMAGES_H

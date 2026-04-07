@@ -7,7 +7,7 @@
 
 // Timing
 static int cpu_shop_delay[MAX_PLAYERS];
-static int cpu_think_delay[MAX_PLAYERS];
+static int cpu_drill_power(App* app, int p);
 
 // Shop navigation state
 static int cpu_shop_target[MAX_PLAYERS];
@@ -30,9 +30,9 @@ void cpu_assign(int p, char* name_buf, int name_max) {
     snprintf(name_buf, name_max, "%s %d", cpu_personality_names[cpu_personality[p]], cpu_number_counter);
 }
 
-#define CPU_SHOP_MIN_DELAY   6  // ~100ms cursor moves
-#define CPU_SHOP_MAX_DELAY  14  // ~230ms
-#define CPU_SHOP_ACT_DELAY  18  // ~300ms pause before buy/sell action
+#define CPU_SHOP_MIN_DELAY   3  // ~50ms cursor moves (2x faster)
+#define CPU_SHOP_MAX_DELAY   7  // ~115ms
+#define CPU_SHOP_ACT_DELAY   9  // ~150ms pause before buy/sell action
 #define CPU_THINK_MIN_DELAY  4
 #define CPU_THINK_MAX_DELAY 12
 
@@ -83,14 +83,6 @@ static LevelAnalysis cpu_analyze_level(const uint8_t* map) {
     }
     return a;
 }
-
-// Current drill power from inventory
-static int cpu_drill_power(App* app, int p) {
-    return 1 + app->player_inventory[p][EQUIP_SMALL_PICKAXE]
-             + 3 * app->player_inventory[p][EQUIP_LARGE_PICKAXE]
-             + 5 * app->player_inventory[p][EQUIP_DRILL];
-}
-
 
 // Navigate cursor one step toward target item (shop grid is 4 columns)
 static bool cpu_shop_navigate(int* cursor, int target) {
@@ -179,28 +171,29 @@ void cpu_shop_tick(App* app, int p, int* cursor, bool* ready) {
     // Misers sell aggressively: dump expensive items from weapon crates for cash
     if (!cpu_sell_done[p]) {
         bool is_miser = (cpu_personality[p] == 2);
+        // Only dump genuine surplus from weapon crates. Default keep is at
+        // least 1 of every utility so the CPU can actually use what it owns.
         static const struct { int item; int keep_normal; int keep_miser; int keep_rounds; } sell_rules[] = {
-            {EQUIP_METAL_WALL,       0, 0, 0},
-            {EQUIP_BIOMASS,          0, 0, 1},
-            {EQUIP_CLONE,            0, 0, 1},
-            {EQUIP_EXTINGUISHER,     0, 0, 1},
-            {EQUIP_BARREL,           0, 0, 1},
-            {EQUIP_JUMPING_BOMB,     0, 0, 2},
-            {EQUIP_PLASTIC,          0, 0, 1},
-            {EQUIP_EXPLOSIVE_PLASTIC,0, 0, 1},
-            {EQUIP_LARGE_CRUCIFIX,   0, 0, 1},
-            {EQUIP_SMALL_CRUCIFIX,   0, 0, 2},
-            {EQUIP_FLAMETHROWER,     0, 0, 1},
-            {EQUIP_GRENADE,          0, 0, 2},
-            {EQUIP_LARGE_RADIO,      0, 0, 2},
-            {EQUIP_SMALL_RADIO,      0, 0, 2},
-            {EQUIP_BIG_BOMB,         2, 0, 99},
-            {EQUIP_NAPALM,           0, 0, 99},
-            {EQUIP_ATOMIC_BOMB,      0, 0, 1},
-            // Misers sell these expensive items from weapon crates
-            {EQUIP_TELEPORT,         1, 0, 1},
-            {EQUIP_SUPER_DRILL,      1, 0, 1},
-            {EQUIP_ARMOR,            1, 0, 2},
+            {EQUIP_METAL_WALL,       1, 0, 1},
+            {EQUIP_BIOMASS,          1, 0, 2},
+            {EQUIP_CLONE,            1, 0, 2},
+            {EQUIP_EXTINGUISHER,     1, 0, 2},
+            {EQUIP_BARREL,           1, 0, 3},
+            {EQUIP_JUMPING_BOMB,     1, 0, 3},
+            {EQUIP_PLASTIC,          1, 0, 3},
+            {EQUIP_EXPLOSIVE_PLASTIC,1, 0, 3},
+            {EQUIP_LARGE_CRUCIFIX,   1, 0, 2},
+            {EQUIP_SMALL_CRUCIFIX,   1, 0, 3},
+            {EQUIP_FLAMETHROWER,     1, 0, 2},
+            {EQUIP_GRENADE,          1, 0, 4},
+            {EQUIP_LARGE_RADIO,      1, 0, 3},
+            {EQUIP_SMALL_RADIO,      1, 0, 3},
+            {EQUIP_BIG_BOMB,         3, 0, 99},
+            {EQUIP_NAPALM,           1, 0, 99},
+            {EQUIP_ATOMIC_BOMB,      1, 0, 2},
+            {EQUIP_TELEPORT,         1, 0, 2},
+            {EQUIP_SUPER_DRILL,      1, 0, 2},
+            {EQUIP_ARMOR,            2, 0, 3},
         };
         bool found_sell = false;
         for (int i = 0; i < (int)(sizeof(sell_rules)/sizeof(sell_rules[0])); i++) {
@@ -388,6 +381,36 @@ void cpu_shop_tick(App* app, int p, int* cursor, bool* ready) {
     }
     #undef G
 
+    // Fill-in pass: make sure the CPU at least tries every equipment slot
+    // over the course of a tournament. For each item it owns 0 of and that
+    // isn't already in the goal list, add a small "buy 1" goal. Cheap items
+    // get higher priority by being checked first; expensive specialty items
+    // still get a chance when there's surplus cash.
+    {
+        static const int fill_order[] = {
+            EQUIP_SMALL_BOMB, EQUIP_BIG_BOMB, EQUIP_DYNAMITE, EQUIP_MINE,
+            EQUIP_GRENADE, EQUIP_BARREL, EQUIP_SMALL_CRUCIFIX, EQUIP_PLASTIC,
+            EQUIP_EXPLOSIVE_PLASTIC, EQUIP_JUMPING_BOMB, EQUIP_DIGGER,
+            EQUIP_SMALL_RADIO, EQUIP_LARGE_RADIO, EQUIP_LARGE_CRUCIFIX,
+            EQUIP_FLAMETHROWER, EQUIP_NAPALM, EQUIP_EXTINGUISHER,
+            EQUIP_METAL_WALL, EQUIP_BIOMASS, EQUIP_TELEPORT, EQUIP_CLONE,
+            EQUIP_SUPER_DRILL, EQUIP_ATOMIC_BOMB,
+        };
+        int n = (int)(sizeof(fill_order) / sizeof(fill_order[0]));
+        for (int i = 0; i < n && ngoals < 24; i++) {
+            int item = fill_order[i];
+            if (cpu_shop_sold[p][item]) continue;
+            if (app->player_inventory[p][item] > 0) continue;
+            // Skip already-listed goals
+            bool already = false;
+            for (int j = 0; j < ngoals; j++) if (goals[j].item == item) { already = true; break; }
+            if (already) continue;
+            // Personality-based skip: misers ignore rare/expensive specials.
+            if (cpu_personality[p] == 2 && EQUIPMENT_PRICES[item] > 200) continue;
+            goals[ngoals++] = (BuyGoal){item, 1};
+        }
+    }
+
     // Find first affordable goal within budget, navigate to it
     uint32_t spent = cpu_shop_budget[p] > app->player_cash[p] ? cpu_shop_budget[p] - app->player_cash[p] : 0;
     for (int i = 0; i < ngoals; i++) {
@@ -405,621 +428,496 @@ void cpu_shop_tick(App* app, int p, int* cursor, bool* ready) {
     cpu_shop_action[p] = 2;
 }
 
-// ==================== CPU Gameplay AI ====================
+// ==================== CPU Gameplay AI (clean slate) ====================
+//
+// Goals (so far): explore the level and pick up any treasure found.
+// No threat awareness yet — monsters/bombs/enemies are ignored.
+//
+// Movement model: re-decide only when the actor is tile-aligned. Use a
+// uniform-cost BFS over the map, with each tile classified as walkable,
+// diggable (slow but free), or bombable (fast but costs a bomb). Find the
+// nearest treasure; if none reachable, pick the nearest unvisited tile.
+// Walk one step toward it. If that step is into a wall and we have bombs,
+// drop one (only if we have an obvious escape route).
 
+#include "fonts.h"
+
+// ---- direction tables (shared with movement & rendering)
 static const int DDX[] = {0, 0, -1, 1};
 static const int DDY[] = {-1, 1, 0, 0};
 static const uint8_t DIR_FLAGS[] = {NET_INPUT_UP, NET_INPUT_DOWN, NET_INPUT_LEFT, NET_INPUT_RIGHT};
 
-static bool cpu_is_bomb(uint8_t val) {
-    // Must match game.c is_bomb() — DO NOT use ranges that include sand/stone tiles
-    return val == 0x57 || val == 0x77 || val == 0x78  // small bomb 1-3
-        || val == 0x58 || val == 0x8B || val == 0x8C  // big bomb 1-3
-        || val == 0x59 || val == 0x8D || val == 0x8E  // dynamite 1-3
-        || val == 0x9D || val == 0x9E || val == 0x9F  // atomic 1-3
-        || val == TILE_BARREL || val == TILE_MINE
-        || val == 0x63 || val == 0x82 || val == 0x67 || val == 0x69 // small radios
-        || val == 0x64 || val == 0x83 || val == 0x68 || val == 0x6A // big radios
-        || val == 0x4B || val == 0x4C  // crucifix bombs
-        || val == 0xA0 || val == 0xA1  // plastic bombs
-        || val == 0xA2 || val == 0xA3  // digger, napalm
-        || val == 0xAB                 // jumping bomb
-        || val == 0x56;                // napalm2
-}
-
+// ---- tile classification (kept from prior cpu.c — used by other helpers)
 static bool cpu_is_treasure(uint8_t val) {
-    return (val >= 0x8F && val <= 0x9A) || val == 0x6D;
+    return (val >= 0x8F && val <= 0x9A) || val == TILE_DIAMOND;
 }
-
-static bool cpu_is_valuable(uint8_t val) {
-    return cpu_is_treasure(val) || val == 0x73 || val == 0x79; // treasure, crate, medikit
+static bool cpu_is_pickup(uint8_t val) {
+    // Things we are happy to walk onto and grab. Medikits are handled separately
+    // — only worth grabbing when hurt or contested.
+    if (cpu_is_treasure(val)) return true;
+    if (val == TILE_WEAPONS_CRATE) return true;
+    if (val >= 0x8B && val <= 0x8E) return true; // pickaxes / drill
+    if (val == 0xB3) return true;             // life
+    return false;
 }
-
 static bool cpu_walkable(uint8_t val) {
     if (is_passable(val)) return true;
-    if (cpu_is_treasure(val)) return true;
-    if (val >= 0x32 && val <= 0x34) return true; // sand (TILE_SAND1-TILE_SAND3)
-    if (val >= 0x8B && val <= 0x8E) return true; // pickaxes/drill
-    if (val == 0x79 || val == 0xB3) return true;  // medikit, life item
-    if (val == 0x73) return true; // weapons crate
+    if (cpu_is_pickup(val)) return true;
+    if (val >= 0x32 && val <= 0x34) return true; // sand 1-3 (auto-cleared on entry)
+    if (val == 0xAF) return true;
     return false;
 }
-
 static bool cpu_diggable(uint8_t val) {
     if (is_stone(val)) return true;
-    if (val == 0x37 || val == 0x38 || val == 0x39) return true;
-    if (val >= 0x40 && val <= 0x46) return true;
-    if (val == 0xAC || val == 0xAD || val == 0xAE) return true;
-    if (val == 0x70 || val == 0x71) return true;
+    if (val >= TILE_SAND1 && val <= TILE_SAND3) return true;
+    if (val == TILE_GRAVEL_LIGHT || val == TILE_GRAVEL_HEAVY) return true;
+    if (val == TILE_STONE_CRACKED_LIGHT || val == TILE_STONE_CRACKED_HEAVY) return true;
+    if (val == TILE_BRICK || val == TILE_BRICK_CRACKED_LIGHT || val == TILE_BRICK_CRACKED_HEAVY) return true;
+    return false;
+}
+static bool cpu_bombable(uint8_t val) {
+    if (val == TILE_WALL || val == 0xB4 || val == 0xB5) return false;
+    if (cpu_walkable(val)) return false;
+    if (val == TILE_BOULDER) return true;  // boulders shatter under blasts
+    return cpu_diggable(val);
+}
+static bool cpu_is_bomb_tile(uint8_t val) {
+    // Just enough to avoid pathing through obvious live ordnance.
+    return val == 0x57 || val == 0x58 || val == 0x59
+        || val == 0x77 || val == 0x78
+        || val == 0x8B || val == 0x8C || val == 0x8D || val == 0x8E
+        || val == 0x9D || val == 0x9E || val == 0x9F
+        || val == TILE_BARREL || val == TILE_MINE
+        || val == 0xAB || val == 0xA0 || val == 0xA1 || val == 0xA2 || val == 0xA3
+        || val == 0x4B || val == 0x4C || val == 0x56;
+}
+// Rough cross-blast radius estimate for any bomb tile.
+static int cpu_bomb_radius(uint8_t val) {
+    if (val == 0x57 || val == 0x77 || val == 0x78) return 2;
+    if (val == 0x58 || val == 0x8B || val == 0x8C) return 3;
+    if (val == 0x59 || val == 0x8D || val == 0x8E) return 4;
+    if (val == 0x9D || val == 0x9E || val == 0x9F) return 7;
+    if (val == 0x4B) return 4;
+    if (val == 0x4C) return 6;
+    if (val == 0xA0 || val == 0xA1) return 4;
+    if (val == 0xA2 || val == 0xA3) return 4;
+    if (val == 0xAB) return 3;
+    if (val == TILE_BARREL) return 3;
+    if (val == TILE_MINE) return 2;
+    return 3;
+}
+
+static int cpu_drill_power(App* app, int p) {
+    return 1 + app->player_inventory[p][EQUIP_SMALL_PICKAXE]
+             + 3 * app->player_inventory[p][EQUIP_LARGE_PICKAXE]
+             + 5 * app->player_inventory[p][EQUIP_DRILL];
+}
+static bool cpu_has_bombs(App* app, int p) {
+    static const int bombs[] = {
+        EQUIP_SMALL_BOMB, EQUIP_BIG_BOMB, EQUIP_DYNAMITE, EQUIP_NAPALM,
+        EQUIP_SMALL_RADIO, EQUIP_LARGE_RADIO, EQUIP_MINE, EQUIP_BARREL,
+        EQUIP_SMALL_CRUCIFIX, EQUIP_LARGE_CRUCIFIX, EQUIP_PLASTIC,
+        EQUIP_EXPLOSIVE_PLASTIC, EQUIP_DIGGER, EQUIP_JUMPING_BOMB,
+        EQUIP_ATOMIC_BOMB, EQUIP_GRENADE, EQUIP_FLAMETHROWER,
+    };
+    for (size_t i = 0; i < sizeof(bombs)/sizeof(bombs[0]); i++)
+        if (app->player_inventory[p][bombs[i]] > 0) return true;
     return false;
 }
 
-static bool cpu_bombable(uint8_t val) {
-    if (cpu_diggable(val)) return true;
-    if (val == TILE_WALL || val == TILE_BARREL || val == 0xA9) return false;
-    return !cpu_walkable(val) && !is_passable(val);
-}
+// ---- per-player state (kept across frames)
+typedef enum {
+    GOAL_NONE = 0,
+    GOAL_TREASURE,
+    GOAL_EXPLORE,
+} GoalKind;
 
-// Get blast radius of a bomb tile.
-static int cpu_bomb_radius(uint8_t val) {
-    // Small bombs
-    if (val == 0x57 || val == 0x77 || val == 0x78) return 2;
-    // Big bombs
-    if (val == 0x58 || val == 0x8B || val == 0x8C) return 3;
-    // Dynamite
-    if (val == 0x59 || val == 0x8D || val == 0x8E) return 4;
-    // Atomic/nuke
-    if (val == 0x9D || val == 0x9E || val == 0x9F) return 7;
-    // Napalm (spreads, treat as radius 5)
-    if (val == 0xA3 || val == 0x57) return 5;
-    // Small crucifix (cross rays)
-    if (val == 0x4B) return 4;
-    // Large crucifix (long cross rays)
-    if (val == 0x4C) return 6;
-    // Plastic explosive (fills area)
-    if (val == 0xA0 || val == 0xA1) return 4;
-    // Digger bomb (line)
-    if (val == 0xA2) return 3;
-    // Barrel (explodes in chain, big bomb equivalent)
-    if (val == TILE_BARREL) return 3;
-    // Jumping bomb
-    if (val == 0xAB) return 3;
-    // Small/big radio (dormant until triggered, timer=0)
-    if (val == 0x63 || val == 0x82 || val == 0x67 || val == 0x69) return 2;
-    if (val == 0x64 || val == 0x83 || val == 0x68 || val == 0x6A) return 3;
-    // Mine (instant on contact)
-    if (val == TILE_MINE) return 2;
-    return 2; // unknown bomb type, assume small
-}
+typedef enum {
+    COMBAT_NONE = 0,
+    COMBAT_ATTACK_PLAYER,
+    COMBAT_ATTACK_MONSTER,
+    COMBAT_FLEE_PLAYER,
+    COMBAT_FLEE_MONSTER,
+    COMBAT_FLEE_BOMB,
+    COMBAT_DEFUSE,
+    COMBAT_DEFEND,
+    COMBAT_NUKE,
+    COMBAT_SUPER_DRILL,
+    COMBAT_RANGED,
+    COMBAT_REMOTE,
+} CombatState;
 
-// How dangerous is this cell? Models cross-pattern blasts and area bombs.
-// Key insight: it takes ~10 ticks to move 1 tile. A bomb at timer T with blast
-// radius R is dangerous if T < (dist_to_escape) * 10. We model this as:
-// "escape ticks needed" = (radius - dist_from_bomb + 1) * 10
-// If timer < escape_ticks, we're in mortal danger.
-static int cpu_danger(World* world, int cx, int cy) {
-    if (cx < 0 || cx >= MAP_WIDTH || cy < 0 || cy >= MAP_HEIGHT) return 999;
-    int sev = 0;
-    for (int axis = 0; axis < 2; axis++) {
-        for (int sign = -1; sign <= 1; sign += 2) {
-            for (int dist = 0; dist <= 7; dist++) {
-                int nx = cx + (axis == 0 ? sign * dist : 0);
-                int ny = cy + (axis == 1 ? sign * dist : 0);
-                if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) break;
-                uint8_t tile = world->tiles[ny][nx];
-                if (cpu_is_bomb(tile) && world->timer[ny][nx] > 0) {
-                    int radius = cpu_bomb_radius(tile);
-                    if (dist <= radius) {
-                        int timer = world->timer[ny][nx];
-                        int tiles_to_escape = radius - dist + 1;
-                        int ticks_needed = tiles_to_escape * 12; // ~12 ticks per tile
-                        if (timer < ticks_needed + 20) {
-                            // We might not escape in time — severity scales with urgency
-                            int urgency = ticks_needed + 20 - timer;
-                            if (urgency < 1) urgency = 1;
-                            sev += urgency * (radius - dist + 2);
-                        }
-                    }
-                }
-                if (tile == TILE_BARREL && dist > 0) {
-                    for (int bd = 1; bd <= 4; bd++) {
-                        int bx = nx + (axis == 0 ? -sign * bd : 0);
-                        int by = ny + (axis == 1 ? -sign * bd : 0);
-                        if (bx >= 0 && bx < MAP_WIDTH && by >= 0 && by < MAP_HEIGHT
-                            && cpu_is_bomb(world->tiles[by][bx]) && world->timer[by][bx] > 0 && world->timer[by][bx] < 80)
-                            sev += 40;
-                    }
-                }
-                if (tile == TILE_WALL && dist > 0) break;
-            }
-        }
-    }
-    for (int dy = -5; dy <= 5; dy++)
-        for (int dx = -5; dx <= 5; dx++) {
-            int nx = cx + dx, ny = cy + dy;
-            if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) continue;
-            uint8_t tile = world->tiles[ny][nx];
-            if ((tile == 0xA0 || tile == 0xA1 || tile == 0xA3 || tile == 0x57)
-                && world->timer[ny][nx] > 0 && world->timer[ny][nx] < 80) {
-                int dist = abs(dx) + abs(dy);
-                if (dist <= 5) sev += (80 - world->timer[ny][nx]) * 2;
-            }
-        }
-    return sev;
-}
-
-// Per-player state
-static uint8_t cpu_visited[MAX_PLAYERS][MAP_HEIGHT][MAP_WIDTH];
-static int cpu_last_dir[MAX_PLAYERS];
-static bool cpu_flee_mode[MAX_PLAYERS];
-static int cpu_last_tile_x[MAX_PLAYERS], cpu_last_tile_y[MAX_PLAYERS];
-static int cpu_stuck_counter[MAX_PLAYERS]; // how many ticks we've been in the same small area
-
-// Decay visited map (call periodically)
-static void cpu_decay_visited(int p) {
-    for (int y = 0; y < MAP_HEIGHT; y++)
-        for (int x = 0; x < MAP_WIDTH; x++)
-            if (cpu_visited[p][y][x] > 0)
-                cpu_visited[p][y][x] -= 1; // slow steady decay
-}
-
-// ==================== A* Pathfinder ====================
-
-#define ASTAR_MAX 2970
+#define CPU_PATH_MAX 256
 typedef struct {
-    int16_t x, y, g, f;
-    int16_t parent;
-    uint8_t dir;
-    bool first_bomb;
-} AStarNode;
-typedef bool (*GoalFunc)(World*, int, int, void*);
-typedef struct { uint8_t dir; bool needs_bomb; } AStarResult;
+    uint8_t visited[MAP_HEIGHT][MAP_WIDTH]; // increments per visit
+    GoalKind goal_kind;
+    int goal_x, goal_y;
+    // Cached path from current tile -> goal (cell coords). path[0] is the next step.
+    int16_t path_x[CPU_PATH_MAX];
+    int16_t path_y[CPU_PATH_MAX];
+    int path_len;
+    int last_tile_x, last_tile_y;
+    int stuck_ticks;       // ticks spent on the same tile
+    int unstick_steps;     // remaining forced random-walk steps after a stall
+    // Per-player goal blacklist (used for tiles we abandoned because we got stuck)
+    int blacklist_x[4], blacklist_y[4];
+    int blacklist_ttl[4];  // ticks remaining
+    bool needs_bomb;
+    CombatState combat;
+} CpuState;
 
-static AStarResult cpu_astar(World* world, int sx, int sy, GoalFunc goal, void* ctx,
-                              int drill, bool bombs, int max_steps, int player) {
-    AStarResult none = {0, false};
-    static uint8_t vis[MAP_HEIGHT][MAP_WIDTH];
-    static AStarNode open[ASTAR_MAX];
-    memset(vis, 0, sizeof(vis));
+static CpuState cpu_state[MAX_PLAYERS];
 
-    int cnt = 0;
-    open[cnt++] = (AStarNode){sx, sy, 0, 0, -1, 0, false};
-    vis[sy][sx] = 1;
-    int head = 0, steps = 0;
+// ---- Cost model
+// Costs are in "ticks" (one walkable tile = WALK_TICKS). Diggable tiles add
+// the actual dig time given the player's current drilling power. Bombable but
+// non-diggable tiles are ignored for now (no bombing yet in this pass).
+#define WALK_TICKS 10
 
-    while (head < cnt && steps < max_steps) {
-        int best = head;
-        for (int i = head + 1; i < cnt; i++)
-            if (open[i].f < open[best].f) best = i;
-        if (best != head) { AStarNode t = open[head]; open[head] = open[best]; open[best] = t; }
-        AStarNode cur = open[head++];
-        steps++;
+// Mirror of game.c's get_initial_hits (private there). Returns hits required
+// to clear the tile, or -1 if not diggable / indestructible.
+// Mirrors game.c get_initial_hits(): the # of hits required to fully clear
+// the tile at full health. Lower values = faster to dig.
+static int cpu_initial_hits(uint8_t val) {
+    if (val == TILE_WALL) return -1;
+    if (val >= TILE_SAND1 && val <= TILE_SAND3) return 24;
+    if (val == TILE_GRAVEL_LIGHT) return 108;
+    if (val == TILE_GRAVEL_HEAVY) return 347;
+    if (val == TILE_BOULDER) return 24;
+    // Stone "decoration" pieces (corners) — cheaper than full stone
+    if (val == TILE_STONE_TOP_LEFT || val == TILE_STONE_TOP_RIGHT
+        || val == TILE_STONE_BOTTOM_RIGHT || val == TILE_STONE_BOTTOM_LEFT) return 1227;
+    if (val == TILE_STONE1) return 2000;
+    if (val == TILE_STONE2) return 2150;
+    if (val == TILE_STONE3) return 2200;
+    if (val == TILE_STONE4) return 2100;
+    if (val == TILE_STONE_CRACKED_LIGHT) return 1000;
+    if (val == TILE_STONE_CRACKED_HEAVY) return 500;
+    if (val == TILE_BRICK) return 8000;
+    if (val == TILE_BRICK_CRACKED_LIGHT) return 4000;
+    if (val == TILE_BRICK_CRACKED_HEAVY) return 2000;
+    return -1;
+}
+
+// Can a boulder at (bx,by) be pushed in direction (dx,dy) — i.e. is the cell
+// behind it free of walls/actors/other boulders so the player can shove it?
+static bool cpu_boulder_pushable(World* w, int bx, int by, int dx, int dy) {
+    int tx = bx + dx, ty = by + dy;
+    if (tx < 0 || tx >= MAP_WIDTH || ty < 0 || ty >= MAP_HEIGHT) return false;
+    if (!is_passable(w->tiles[ty][tx])) return false;
+    for (int ai = 0; ai < w->num_actors; ai++) {
+        if (w->actors[ai].is_dead) continue;
+        if (w->actors[ai].pos.x / 10 == tx && (w->actors[ai].pos.y - 30) / 10 == ty) return false;
+    }
+    return true;
+}
+
+typedef bool (*CpuGoalFn)(World* w, int x, int y, void* ctx);
+
+// Approximate ticks it takes to clear a wall by bombing: place + escape +
+// fuse + return. Cheap compared with digging brick or hard stone.
+#define BOMB_TICKS 45
+
+// Per-cell countdown until the next bomb blast reaches it. UINT16_MAX = safe.
+static uint16_t cpu_danger[MAP_HEIGHT][MAP_WIDTH];
+
+// Personality + per-replan jitter applied to BOMB_TICKS so the CPU doesn't
+// always make the same dig-vs-bomb decision. Computed at the top of cpu_replan.
+static int cpu_bomb_cost_bias;
+// Player whose visited heatmap should be applied as a soft path cost.
+static int cpu_planning_player;
+
+// Cost to enter cell (nx,ny) from (px,py). Returns -1 if not enterable.
+static int cpu_step_cost(World* w, int px, int py, int nx, int ny, int drill, bool bombs) {
+    uint8_t t = w->tiles[ny][nx];
+    if (cpu_is_bomb_tile(t)) return -1;
+    if (cpu_walkable(t)) return WALK_TICKS;
+    if (t == TILE_BOULDER) {
+        if (cpu_boulder_pushable(w, nx, ny, nx - px, ny - py)) return WALK_TICKS * 2;
+        // Can't push (wall behind, blocked by actor): fall through to bomb logic.
+        if (bombs) {
+            int bt = BOMB_TICKS + cpu_bomb_cost_bias;
+            if (cpu_planning_player >= 0 && cpu_planning_player < MAX_PLAYERS)
+                bt += cpu_state[cpu_planning_player].visited[ny][nx] * 2;
+            return bt;
+        }
+        return -1;
+    }
+    int dig_ticks = -1;
+    if (drill > 0 && cpu_diggable(t)) {
+        int hits = w->hits[ny][nx];
+        if (hits <= 0) hits = cpu_initial_hits(t);
+        if (hits >= 0) dig_ticks = WALK_TICKS + (hits + drill - 1) / drill;
+    }
+    int bomb_ticks = -1;
+    if (bombs && cpu_bombable(t)) bomb_ticks = BOMB_TICKS + cpu_bomb_cost_bias;
+    if (dig_ticks < 0 && bomb_ticks < 0) return -1;
+    int base;
+    if (dig_ticks < 0) base = bomb_ticks;
+    else if (bomb_ticks < 0) base = dig_ticks;
+    else base = dig_ticks < bomb_ticks ? dig_ticks : bomb_ticks;
+    // Heatmap penalty: tiles we keep visiting cost more, pushing the planner
+    // toward unexplored ground when it's pursuing a distant goal.
+    if (cpu_planning_player >= 0 && cpu_planning_player < MAX_PLAYERS) {
+        int v = cpu_state[cpu_planning_player].visited[ny][nx];
+        base += v * 2;
+    }
+    return base;
+}
+
+static bool cpu_bfs(World* w, int sx, int sy, CpuGoalFn goal, void* ctx,
+                    int drill, bool bombs,
+                    int* gx_out, int* gy_out,
+                    int16_t* px, int16_t* py, int* path_len_out)
+{
+    static int16_t parent[MAP_HEIGHT][MAP_WIDTH];
+    static uint32_t dist[MAP_HEIGHT][MAP_WIDTH];
+    static uint8_t in_open[MAP_HEIGHT][MAP_WIDTH];
+    for (int y = 0; y < MAP_HEIGHT; y++)
+        for (int x = 0; x < MAP_WIDTH; x++) {
+            parent[y][x] = -1;
+            dist[y][x] = 0xFFFFFFFFu;
+            in_open[y][x] = 0;
+        }
+
+    // Dijkstra on a 64x45 grid. Linear scan per pop is fine.
+    dist[sy][sx] = 0;
+    int remaining = 1;
+    in_open[sy][sx] = 1;
+
+    int found_x = -1, found_y = -1;
+
+    while (remaining > 0) {
+        int bx = -1, by = -1;
+        uint32_t bd = 0xFFFFFFFFu;
+        for (int y = 0; y < MAP_HEIGHT; y++)
+            for (int x = 0; x < MAP_WIDTH; x++)
+                if (in_open[y][x] && dist[y][x] < bd) { bd = dist[y][x]; bx = x; by = y; }
+        if (bx < 0) break;
+        in_open[by][bx] = 0;
+        remaining--;
+
+        if (!(bx == sx && by == sy) && goal(w, bx, by, ctx)) {
+            found_x = bx; found_y = by;
+            break;
+        }
 
         for (int d = 0; d < 4; d++) {
-            int nx = cur.x + DDX[d], ny = cur.y + DDY[d];
+            int nx = bx + DDX[d], ny = by + DDY[d];
             if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) continue;
-            if (vis[ny][nx]) continue;
-
-            uint8_t tile = world->tiles[ny][nx];
-
-            // Darkness: fogged tiles are unknowns
-            if (world->darkness && !world->fog[ny][nx]) {
-                vis[ny][nx] = 1;
-                int ng = cur.g + 5;
-                uint8_t fd = (cur.parent == -1) ? DIR_FLAGS[d] : cur.dir;
-                bool fb = (cur.parent == -1) ? false : cur.first_bomb;
-                if (cnt < ASTAR_MAX) open[cnt++] = (AStarNode){nx, ny, ng, ng, head-1, fd, fb};
-                continue;
+            int c = cpu_step_cost(w, bx, by, nx, ny, drill, bombs);
+            if (c < 0) continue;
+            uint32_t nd = dist[by][bx] + (uint32_t)c;
+            // Refuse to walk into a cell that will be in a bomb's blast before
+            // we even get there. Add a small safety margin.
+            if (cpu_danger[ny][nx] != 0xFFFF
+                && (uint32_t)cpu_danger[ny][nx] < nd + 20) continue;
+            if (nd < dist[ny][nx]) {
+                dist[ny][nx] = nd;
+                parent[ny][nx] = (int16_t)(by * MAP_WIDTH + bx);
+                if (!in_open[ny][nx]) { in_open[ny][nx] = 1; remaining++; }
             }
-
-            // Mine blindness
-            if (tile == TILE_MINE && (rand() % 100) < 30) tile = TILE_PASSAGE;
-
-            bool first = (cur.parent == -1);
-            int cost = 0;
-            bool bomb_step = false;
-
-            // Check if tile is pushable (boulder, barrel, extinguished bombs, etc.)
-            bool is_push = (tile == TILE_BOULDER || tile == TILE_BARREL
-                || tile == 0x57 || tile == 0x58 || tile == 0x59 // extinguished bombs
-                || tile == 0xAA); // extinguished dynamite
-            if (cpu_is_treasure(tile) || tile == 0x9C || tile == 0x73) {
-                cost = 0; // FREE — treasure, teleporter, crate always worth walking to
-            } else if (cpu_walkable(tile)) {
-                cost = 1;
-            } else if (tile == TILE_MINE) {
-                cost = 12;
-            } else if (is_push) {
-                // Pushable: check if it can be pushed in this direction
-                int bx = nx + DDX[d], by = ny + DDY[d];
-                bool can_push = false;
-                if (bx >= 0 && bx < MAP_WIDTH && by >= 0 && by < MAP_HEIGHT
-                    && is_passable(world->tiles[by][bx])) {
-                    bool blocked = false;
-                    for (int ai = 0; ai < world->num_actors; ai++) {
-                        if (world->actors[ai].is_dead) continue;
-                        if (world->actors[ai].pos.x / 10 == bx && (world->actors[ai].pos.y - 30) / 10 == by)
-                            { blocked = true; break; }
-                    }
-                    if (!blocked) { can_push = true; cost = 5; }
-                }
-                if (!can_push) {
-                    // Can't push — try bombing it instead
-                    if (bombs && tile != TILE_BARREL) { cost = 5; bomb_step = true; }
-                    else continue;
-                }
-            } else if (drill > 0 && (tile >= 0x32 && tile <= 0x34)) {
-                // Sand (TILE_SAND1-TILE_SAND3): trivial to dig, always walk through
-                cost = 2;
-            } else if (bombs && cpu_bombable(tile)) {
-                // Bombing: instant clear, preferred for anything harder than sand
-                cost = 4;
-                bomb_step = true;
-            } else if (drill > 0 && cpu_diggable(tile)) {
-                // Digging: cost scales with difficulty vs drill power.
-                // When out of bombs, dig cost is reduced — slow progress beats looping.
-                int hits = 200;
-                if (tile == 0xAC) hits = 8000;
-                else if (tile == 0xAD) hits = 4000;
-                else if (tile == 0xAE) hits = 2000;
-                else if (is_stone(tile)) hits = 2100;
-                else if (tile == 0x70) hits = 1000;
-                else if (tile == 0x71) hits = 500;
-                else if (tile == 0x40) hits = 108;
-                else if (tile >= 0x41 && tile <= 0x46) hits = 347;
-                int dig_ticks = hits / (drill > 0 ? drill : 1);
-                if (bombs) {
-                    // Have bombs: digging is expensive (prefer bombing)
-                    cost = 2 + dig_ticks / 10;
-                    if (cost > 80) cost = 80;
-                } else {
-                    // No bombs: digging is the only option, make it much cheaper
-                    // so A* prefers digging over looping through visited tiles
-                    cost = 3 + dig_ticks / 40;
-                    if (cost > 20) cost = 20;
-                }
-            } else {
-                continue;
-            }
-
-            if (cpu_is_bomb(tile)) continue;
-            int dng = cpu_danger(world, nx, ny);
-            if (dng > 100) cost += 200;        // near-certain death — almost impassable
-            else if (dng > 30) cost += 50 + dng;  // serious danger
-            else if (dng > 0) cost += 15 + dng;
-
-            // Heavy penalty for tiles occupied by other players
-            for (int op = 0; op < world->num_players; op++) {
-                if (op == player || world->actors[op].is_dead) continue;
-                if (world->actors[op].pos.x / 10 == nx && (world->actors[op].pos.y - 30) / 10 == ny)
-                    cost += 30;
-            }
-
-            // Avoid monster-occupied tiles and tiles adjacent to monsters (skip own clones)
-            for (int m = world->num_players; m < world->num_actors; m++) {
-                if (world->actors[m].is_dead || !world->actors[m].is_active) continue;
-                if (world->actors[m].kind == ACTOR_CLONE && world->actors[m].clone_owner == player) continue;
-                int mx = world->actors[m].pos.x / 10;
-                int my = (world->actors[m].pos.y - 30) / 10;
-                int md = abs(mx - nx) + abs(my - ny);
-                if (md == 0) cost += 50;       // on monster tile
-                else if (md == 1) cost += 20;  // adjacent to monster
-                else if (md == 2) cost += 5;   // near monster
-            }
-
-            // Visited penalty: moderate to discourage oscillation but allow retracing
-            // corridors to reach distant targets. Only very recent tiles (high values)
-            // get heavy penalty — older visited tiles are just slightly more expensive.
-            if (player >= 0 && player < MAX_PLAYERS) {
-                int v = cpu_visited[player][ny][nx];
-                if (v > 200) cost += 15;       // visited many times: moderate discouragement
-                else if (v > 100) cost += 10;  // visited twice
-                else if (v > 0) cost += 5;     // visited once: slight preference for new tiles
-            }
-
-            // Penalize reversing the last direction taken (first step only)
-            if (first && player >= 0 && player < MAX_PLAYERS) {
-                int reverse = -1;
-                switch (cpu_last_dir[player]) {
-                    case 0: reverse = 1; break; // up→down
-                    case 1: reverse = 0; break; // down→up
-                    case 2: reverse = 3; break; // left→right
-                    case 3: reverse = 2; break; // right→left
-                }
-                if (d == reverse) cost += 200;
-            }
-
-            int ng = cur.g + cost;
-            uint8_t fd = first ? DIR_FLAGS[d] : cur.dir;
-            bool fb = first ? bomb_step : cur.first_bomb;
-
-            if (goal(world, nx, ny, ctx)) return (AStarResult){fd, fb};
-            if (cnt < ASTAR_MAX) { vis[ny][nx] = 1; open[cnt++] = (AStarNode){nx, ny, ng, ng, head-1, fd, fb}; }
         }
     }
-    return none;
+
+    if (found_x < 0) return false;
+
+    // Reconstruct
+    int16_t tmpx[CPU_PATH_MAX];
+    int16_t tmpy[CPU_PATH_MAX];
+    int n = 0;
+    int cx = found_x, cy = found_y;
+    while (!(cx == sx && cy == sy) && n < CPU_PATH_MAX) {
+        tmpx[n] = (int16_t)cx;
+        tmpy[n] = (int16_t)cy;
+        int16_t pp = parent[cy][cx];
+        if (pp < 0) break;
+        cx = pp % MAP_WIDTH;
+        cy = pp / MAP_WIDTH;
+        n++;
+    }
+    // Reverse so path[0] is first step away from start.
+    for (int i = 0; i < n; i++) {
+        px[i] = tmpx[n - 1 - i];
+        py[i] = tmpy[n - 1 - i];
+    }
+    *path_len_out = n;
+    *gx_out = found_x;
+    *gy_out = found_y;
+    return true;
 }
 
+// ---- goal predicates
+typedef struct { int player; bool want_medikit; } TreasureCtx;
+static bool cpu_blacklisted(int player, int x, int y) {
+    CpuState* st = &cpu_state[player];
+    for (int i = 0; i < 4; i++)
+        if (st->blacklist_ttl[i] > 0 && st->blacklist_x[i] == x && st->blacklist_y[i] == y) return true;
+    return false;
+}
 static bool goal_treasure(World* w, int x, int y, void* c) {
-    (void)c;
+    TreasureCtx* ctx = c;
     uint8_t t = w->tiles[y][x];
-    return cpu_is_treasure(t) || t == 0x73 || t == 0x9C; // treasure, weapon crate, teleporter
+    if (ctx && cpu_blacklisted(ctx->player, x, y)) return false;
+    if (cpu_is_pickup(t)) return true;
+    if (t == TILE_MEDIKIT && ctx && ctx->want_medikit) return true;
+    return false;
 }
-static bool goal_medikit(World* w, int x, int y, void* c) { (void)c; return w->tiles[y][x] == 0x79; }
-typedef struct { int ex, ey; } EnemyGoalCtx;
-static bool goal_near_enemy(World* w, int x, int y, void* c) {
-    (void)w; EnemyGoalCtx* e = c; return abs(x - e->ex) + abs(y - e->ey) <= 2;
-}
-// Goal: any tile the CPU hasn't visited much (exploration)
-typedef struct { int player; } ExploreCtx;
-static bool goal_explore(World* w, int x, int y, void* c) {
-    ExploreCtx* ec = c;
+typedef struct { int gx, gy; } FixedCtx;
+static bool goal_fixed(World* w, int x, int y, void* c) {
     (void)w;
-    return cpu_visited[ec->player][y][x] <= 10;
+    FixedCtx* fc = c;
+    return x == fc->gx && y == fc->gy;
+}
+static bool goal_unvisited(World* w, int x, int y, void* c) {
+    int p = *(int*)c;
+    (void)w;
+    if (cpu_blacklisted(p, x, y)) return false;
+    return cpu_state[p].visited[y][x] == 0;
 }
 
-// Select weapon, returns CYCLE or 0
-static uint8_t cpu_select(App* app, Actor* a, int p, int w) {
-    if (app->player_inventory[p][w] <= 0 || a->selected_weapon == w) return 0;
-    return NET_INPUT_CYCLE;
-}
-
-// Place a bomb and flag flee mode for next tick
-static uint8_t cpu_place_bomb(int p) {
-    cpu_flee_mode[p] = true;
-    return NET_INPUT_ACTION;
-}
-
-// Can the CPU safely place a bomb at (cx,cy) and escape the blast?
-// Checks that at least one adjacent walkable tile is outside the bomb's cross-blast.
-// Check if a cell is in the danger zone after placing a new bomb at (bx,by)
-// considering chain reactions with existing bombs.
-static bool cpu_cell_in_combined_danger(World* world, int testx, int testy, int bx, int by, int blast) {
-    // In our new bomb's cross blast? Check walls block propagation.
-    if (testx == bx && abs(testy - by) <= blast) {
-        int step = (testy > by) ? 1 : -1;
-        bool blocked = false;
-        for (int y = by + step; y != testy; y += step) {
-            if (world->tiles[y][bx] == TILE_WALL) { blocked = true; break; }
-        }
-        if (!blocked) return true;
-    }
-    if (testy == by && abs(testx - bx) <= blast) {
-        int step = (testx > bx) ? 1 : -1;
-        bool blocked = false;
-        for (int x = bx + step; x != testx; x += step) {
-            if (world->tiles[by][x] == TILE_WALL) { blocked = true; break; }
-        }
-        if (!blocked) return true;
-    }
-    // Check existing bombs that our new bomb would chain-trigger
-    // Our bomb at (bx,by) with radius=blast hits tiles in its cross.
-    // Any bomb in that cross will also explode.
-    for (int axis = 0; axis < 2; axis++) {
-        for (int sign = -1; sign <= 1; sign += 2) {
-            for (int dist = 1; dist <= blast; dist++) {
-                int nx = bx + (axis == 0 ? sign * dist : 0);
-                int ny = by + (axis == 1 ? sign * dist : 0);
-                if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) break;
-                uint8_t tile = world->tiles[ny][nx];
-                if (tile == TILE_WALL) break;
-                if (cpu_is_bomb(tile) || tile == TILE_BARREL) {
-                    // This bomb/barrel will chain-react. Check if testx,testy is in ITS blast.
-                    int chain_r = cpu_bomb_radius(tile);
-                    if ((testx == nx && abs(testy - ny) <= chain_r) || (testy == ny && abs(testx - nx) <= chain_r))
-                        return true;
-                }
-            }
-        }
-    }
-    return false;
-}
-
-static bool cpu_can_bomb_safely(World* world, int cx, int cy, int blast_radius) {
-    uint8_t here = world->tiles[cy][cx];
-    if (here != TILE_PASSAGE && !cpu_is_treasure(here) && here != 0xAF) return false;
-
-    // Also refuse if there's already a ticking bomb nearby — chain risk too high
-    for (int dy = -2; dy <= 2; dy++)
-        for (int dx = -2; dx <= 2; dx++) {
-            int nx = cx + dx, ny = cy + dy;
-            if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT)
-                if (cpu_is_bomb(world->tiles[ny][nx]) && world->timer[ny][nx] > 0 && world->timer[ny][nx] < 50)
-                    return false; // existing bomb about to go off — don't add another
-        }
-
-    // For each escape direction, simulate fleeing 2-3 steps and check
-    // if any position along the escape is in the combined danger zone.
+// ---- bomb safety: very simple. We need to be able to step OFF the bomb's
+// cross axis within ~2 tiles. Returns true if we can flee.
+// Can we survive dropping a bomb on (cx,cy)? We're safe if EITHER:
+//   (a) we can walk 3+ straight tiles in some direction (out of cross radius
+//       before fuse expires — small bombs have radius 2 and fuse ~100 ticks),
+//   or (b) we can step into an adjacent walkable cell that's off the bomb's
+//       cross axis (perpendicular escape).
+static bool cpu_can_escape_bomb(World* w, int cx, int cy) {
     for (int d = 0; d < 4; d++) {
-        bool escape_safe = true;
-        bool escape_possible = true;
-        // Walk up to blast_radius+1 steps in this direction
-        for (int step = 1; step <= blast_radius + 2; step++) {
-            int ex = cx + DDX[d] * step, ey = cy + DDY[d] * step;
-            if (ex < 0 || ex >= MAP_WIDTH || ey < 0 || ey >= MAP_HEIGHT) { escape_possible = false; break; }
-            if (!cpu_walkable(world->tiles[ey][ex])) { escape_possible = false; break; }
-            // Check danger from existing bombs at this escape cell
-            if (cpu_danger(world, ex, ey) > 20) { escape_safe = false; break; }
+        int run = 0;
+        for (int s = 1; s <= 5; s++) {
+            int nx = cx + DDX[d] * s, ny = cy + DDY[d] * s;
+            if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) break;
+            if (!cpu_walkable(w->tiles[ny][nx])) break;
+            run++;
+            // Perpendicular escape from this cell?
+            for (int d2 = 0; d2 < 4; d2++) {
+                if (d2 == d) continue;
+                if (DDX[d2] == -DDX[d] && DDY[d2] == -DDY[d]) continue;
+                int px = nx + DDX[d2], py = ny + DDY[d2];
+                if (px < 0 || px >= MAP_WIDTH || py < 0 || py >= MAP_HEIGHT) continue;
+                if (cpu_walkable(w->tiles[py][px])) return true;
+            }
+            if (run >= 3) return true;
         }
-        if (!escape_possible) {
-            // Try stepping perpendicular after 1 step
-            int nx = cx + DDX[d], ny = cy + DDY[d];
-            if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT && cpu_walkable(world->tiles[ny][nx])) {
-                for (int d2 = 0; d2 < 4; d2++) {
-                    int px = nx + DDX[d2], py = ny + DDY[d2];
-                    if (px < 0 || px >= MAP_WIDTH || py < 0 || py >= MAP_HEIGHT) continue;
-                    if (!cpu_walkable(world->tiles[py][px])) continue;
-                    // Must be off the bomb's cross AND not in existing danger
-                    if (!cpu_cell_in_combined_danger(world, px, py, cx, cy, blast_radius)
-                        && cpu_danger(world, px, py) <= 10)
-                        return true;
+    }
+    return false;
+}
+
+// ---- decision: pick best path for this tick
+// Walk the cross of every active bomb, blocked by walls, and store the bomb's
+// remaining fuse in cpu_danger[]. Lower numbers = more dangerous.
+static void cpu_build_danger(World* w) {
+    for (int y = 0; y < MAP_HEIGHT; y++)
+        for (int x = 0; x < MAP_WIDTH; x++) cpu_danger[y][x] = 0xFFFF;
+    for (int by = 0; by < MAP_HEIGHT; by++)
+        for (int bx = 0; bx < MAP_WIDTH; bx++) {
+            uint8_t bt = w->tiles[by][bx];
+            if (!cpu_is_bomb_tile(bt)) continue;
+            int fuse = w->timer[by][bx];
+            if (fuse <= 0) fuse = 1; // about to pop
+            int r = cpu_bomb_radius(bt);
+            // The bomb cell itself
+            if (cpu_danger[by][bx] > fuse) cpu_danger[by][bx] = (uint16_t)fuse;
+            // Cross arms blocked by walls
+            for (int axis = 0; axis < 2; axis++) {
+                for (int sign = -1; sign <= 1; sign += 2) {
+                    for (int d = 1; d <= r; d++) {
+                        int nx = bx + (axis == 0 ? sign * d : 0);
+                        int ny = by + (axis == 1 ? sign * d : 0);
+                        if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) break;
+                        uint8_t t = w->tiles[ny][nx];
+                        if (t == TILE_WALL) break;
+                        if (cpu_danger[ny][nx] > fuse) cpu_danger[ny][nx] = (uint16_t)fuse;
+                        if (cpu_diggable(t) || t == TILE_BOULDER) break; // blast stops at solid mass
+                    }
                 }
             }
-            continue;
         }
-        if (escape_safe) {
-            // Verify the escape endpoint is actually outside our bomb's combined danger
-            int ex = cx + DDX[d] * (blast_radius + 1), ey = cy + DDY[d] * (blast_radius + 1);
-            if (ex >= 0 && ex < MAP_WIDTH && ey >= 0 && ey < MAP_HEIGHT
-                && !cpu_cell_in_combined_danger(world, ex, ey, cx, cy, blast_radius))
-                return true;
+}
+
+static void cpu_replan(App* app, World* world, int p, int cx, int cy) {
+    CpuState* st = &cpu_state[p];
+    // Personality-driven bomb cost bias plus a small random jitter so the
+    // CPU varies its dig-vs-bomb decisions tick to tick.
+    int pers = cpu_personality_init[p] ? cpu_personality[p] : 0;
+    int bias = 0;
+    switch (pers) {
+        case 1: bias = -10; break;  // Aggro: prefers bombing
+        case 2: bias = +25; break;  // Miser: prefers digging (saves bombs)
+        case 3: bias = +15; break;  // Explorer: a bit cheaper than miser
+        default: bias = 0; break;   // Balanced
+    }
+    cpu_bomb_cost_bias = bias + (rand() % 25) - 8;
+    cpu_planning_player = p;
+    // Use the live drilling stat (it tracks pickaxes picked up mid-level too).
+    int drill = world->actors[p].drilling;
+    if (drill <= 0) drill = cpu_drill_power(app, p);
+    bool bombs = cpu_has_bombs(app, p);
+
+    int gx, gy, n;
+    // Decide whether medikits are interesting this tick: hurt OR another live
+    // player is close to one (so we'd better grab it before they do).
+    Actor* me = &world->actors[p];
+    bool hurt = me->health < me->max_health;
+    bool contested_medikit = false;
+    if (!hurt) {
+        for (int my = 0; my < MAP_HEIGHT && !contested_medikit; my++)
+            for (int mx = 0; mx < MAP_WIDTH && !contested_medikit; mx++) {
+                if (world->tiles[my][mx] != TILE_MEDIKIT) continue;
+                for (int op = 0; op < world->num_players; op++) {
+                    if (op == p || world->actors[op].is_dead) continue;
+                    int ox = world->actors[op].pos.x / 10;
+                    int oy = (world->actors[op].pos.y - 30) / 10;
+                    int od = abs(ox - mx) + abs(oy - my);
+                    int md = abs(cx - mx) + abs(cy - my);
+                    if (od <= 4 && md <= od + 2) { contested_medikit = true; break; }
+                }
+            }
+    }
+    TreasureCtx tctx = {p, hurt || contested_medikit};
+
+    // Sticky goals: if the previous goal tile still satisfies the original
+    // predicate AND a path still exists, keep aiming for it. Prevents the CPU
+    // from oscillating between two equidistant treasures every tick.
+    if (st->goal_kind != GOAL_NONE && st->goal_x >= 0 && st->goal_y >= 0
+        && !(cx == st->goal_x && cy == st->goal_y)) {
+        bool still_valid = false;
+        uint8_t gt = world->tiles[st->goal_y][st->goal_x];
+        if (st->goal_kind == GOAL_TREASURE && (cpu_is_pickup(gt) || (gt == TILE_MEDIKIT && tctx.want_medikit)))
+            still_valid = true;
+        if (st->goal_kind == GOAL_EXPLORE && st->visited[st->goal_y][st->goal_x] == 0)
+            still_valid = true;
+        if (still_valid) {
+            FixedCtx fc = {st->goal_x, st->goal_y};
+            if (cpu_bfs(world, cx, cy, goal_fixed, &fc, drill, bombs, &gx, &gy, st->path_x, st->path_y, &n)) {
+                st->path_len = n;
+                return;
+            }
         }
-    }
-    return false;
-}
-
-// Pick best bomb for clearing obstacle at (tx,ty) from current position (cx,cy).
-// Considers: blast radius must reach the target, prefers smaller bombs near valuables,
-// prefers larger bombs for thick walls (multiple tiles to clear).
-static int cpu_pick_bomb_from(App* app, World* world, int p, int cx, int cy, int tx, int ty) {
-    int dist = abs(tx - cx) + abs(ty - cy); // Manhattan distance to target
-    bool same_axis = (tx == cx || ty == cy); // bomb blasts in cross, only hits same axis
-
-    // Check if treasure/crate is near the target — use smallest bomb possible
-    bool valuable_near = false;
-    for (int dy = -2; dy <= 2; dy++)
-        for (int dx = -2; dx <= 2; dx++) {
-            int nx = tx + dx, ny = ty + dy;
-            if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT && cpu_is_valuable(world->tiles[ny][nx]))
-                valuable_near = true;
-        }
-
-    // Count how many wall tiles are in line from bomb position toward target
-    // (thicker walls benefit from bigger blast radius)
-    int wall_depth = 0;
-    if (same_axis) {
-        int sdx = (tx > cx) ? 1 : (tx < cx) ? -1 : 0;
-        int sdy = (ty > cy) ? 1 : (ty < cy) ? -1 : 0;
-        for (int s = 1; s <= 7; s++) {
-            int wx = cx + sdx * s, wy = cy + sdy * s;
-            if (wx < 0 || wx >= MAP_WIDTH || wy < 0 || wy >= MAP_HEIGHT) break;
-            if (cpu_walkable(world->tiles[wy][wx]) || is_passable(world->tiles[wy][wx])) break;
-            wall_depth++;
-        }
+        // Old goal stale or unreachable — drop it and pick a new one below.
+        st->goal_kind = GOAL_NONE;
     }
 
-    // Candidate weapons sorted by preference
-    // For thick walls: prefer bigger blast. For near valuables: prefer smaller.
-    // Weapon must have blast radius >= dist to reach the target.
-    typedef struct { int weapon; int radius; } BombOption;
-    BombOption options[] = {
-        // Digger intentionally excluded — only used for large stone fields (checked separately)
-        {EQUIP_DYNAMITE, 4},      // big radius, good for thick walls
-        {EQUIP_BIG_BOMB, 3},      // cheap, medium radius
-        {EQUIP_SMALL_BOMB, 2},    // cheapest, small radius
-        {EQUIP_NAPALM, 5},        // huge area
-        {EQUIP_SMALL_CRUCIFIX, 4},
-        {EQUIP_LARGE_CRUCIFIX, 6},
-        {EQUIP_ATOMIC_BOMB, 7},   // nuke — overkill but works
-    };
-    int nopts = sizeof(options) / sizeof(options[0]);
-
-    if (valuable_near) {
-        // Near valuables: pick smallest bomb that reaches
-        for (int i = nopts - 1; i >= 0; i--) {
-            if (app->player_inventory[p][options[i].weapon] <= 0) continue;
-            if (!same_axis || options[i].radius < dist) continue;
-            return options[i].weapon;
-        }
+    if (cpu_bfs(world, cx, cy, goal_treasure, &tctx, drill, bombs, &gx, &gy, st->path_x, st->path_y, &n)) {
+        st->goal_kind = GOAL_TREASURE;
+        st->goal_x = gx; st->goal_y = gy;
+        st->path_len = n;
+        return;
     }
-
-    // For stone: only use digger on large connected stone fields (4+ tiles deep)
-    // Digger carves a long tunnel — wasteful on a single stone tile
-    if (is_stone(world->tiles[ty][tx]) && app->player_inventory[p][EQUIP_DIGGER] > 0
-        && same_axis && 3 >= dist && wall_depth >= 4)
-        return EQUIP_DIGGER;
-
-    // For thick walls: prefer bigger radius to clear more in one blast
-    if (wall_depth >= 3) {
-        for (int i = 0; i < nopts; i++) {
-            if (app->player_inventory[p][options[i].weapon] <= 0) continue;
-            if (!same_axis || options[i].radius < dist) continue;
-            if (options[i].radius >= wall_depth) return options[i].weapon;
-        }
+    int pp = p;
+    if (cpu_bfs(world, cx, cy, goal_unvisited, &pp, drill, bombs, &gx, &gy, st->path_x, st->path_y, &n)) {
+        st->goal_kind = GOAL_EXPLORE;
+        st->goal_x = gx; st->goal_y = gy;
+        st->path_len = n;
+        return;
     }
-
-    // Default: pick any weapon that reaches
-    for (int i = 0; i < nopts; i++) {
-        if (app->player_inventory[p][options[i].weapon] <= 0) continue;
-        if (same_axis && options[i].radius >= dist) return options[i].weapon;
-        if (!same_axis && options[i].radius >= 1) return options[i].weapon; // any bomb works off-axis
-    }
-    return -1;
+    st->goal_kind = GOAL_NONE;
+    st->path_len = 0;
 }
 
-// Should we actually bomb this tile? Checks it's destructible and worth bombing.
-static bool cpu_worth_bombing(World* world, int tx, int ty) {
-    if (tx < 0 || tx >= MAP_WIDTH || ty < 0 || ty >= MAP_HEIGHT) return false;
-    uint8_t tile = world->tiles[ty][tx];
-    if (tile == TILE_WALL || tile == 0xB4 || tile == 0xB5) return false; // indestructible
-    if (cpu_walkable(tile) || is_passable(tile)) return false; // already passable
-    return cpu_bombable(tile) || tile == TILE_BOULDER;
-}
-
-// Find any usable offensive weapon. Returns weapon index or -1.
-static int cpu_find_weapon(App* app, int p) {
-    // Priority order: mine, small bomb, big bomb, dynamite, then anything
-    static const int prefer[] = {EQUIP_MINE, EQUIP_SMALL_BOMB, EQUIP_BIG_BOMB, EQUIP_DYNAMITE,
-        EQUIP_NAPALM, EQUIP_SMALL_CRUCIFIX, EQUIP_LARGE_CRUCIFIX, EQUIP_PLASTIC,
-        EQUIP_EXPLOSIVE_PLASTIC, EQUIP_DIGGER, EQUIP_JUMPING_BOMB, EQUIP_ATOMIC_BOMB,
-        EQUIP_SMALL_RADIO, EQUIP_LARGE_RADIO, EQUIP_BARREL, EQUIP_GRENADE, EQUIP_FLAMETHROWER};
-    for (int i = 0; i < (int)(sizeof(prefer)/sizeof(prefer[0])); i++)
-        if (app->player_inventory[p][prefer[i]] > 0) return prefer[i];
-    return -1;
-}
-
-// Switch to a weapon, handling the cycling properly. Returns the action to take.
-// If already on the weapon: returns 0 (ready to fire).
-// If need to cycle: returns NET_INPUT_CYCLE.
-// If weapon not available: returns 0 and sets *ok = false.
-static uint8_t cpu_switch_to(App* app, Actor* actor, int p, int weapon, bool* ok) {
-    *ok = true;
-    if (app->player_inventory[p][weapon] <= 0) { *ok = false; return 0; }
-    if (actor->selected_weapon == weapon) return 0; // ready
-    return NET_INPUT_CYCLE;
-}
-
-// Try to use any available weapon. Returns action (ACTION, CYCLE, or 0 if nothing).
-static uint8_t cpu_use_any_weapon(App* app, Actor* actor, int p) {
-    // If current weapon has ammo, just use it
-    if (actor->selected_weapon >= 0 && actor->selected_weapon < EQUIP_TOTAL
-        && actor->selected_weapon != EQUIP_SMALL_PICKAXE && actor->selected_weapon != EQUIP_LARGE_PICKAXE
-        && actor->selected_weapon != EQUIP_DRILL && actor->selected_weapon != EQUIP_ARMOR
-        && app->player_inventory[p][actor->selected_weapon] > 0)
-        return NET_INPUT_ACTION;
-    // Otherwise cycle to find something
-    int w = cpu_find_weapon(app, p);
-    if (w < 0) return 0;
-    bool ok;
-    uint8_t sw = cpu_switch_to(app, actor, p, w, &ok);
-    return ok ? (sw ? sw : NET_INPUT_ACTION) : 0;
-}
-
-static bool cpu_line_of_sight(World* world, int cx, int cy, int tx, int ty) {
-    if (cx == tx) {
-        int lo = cy < ty ? cy : ty, hi = cy < ty ? ty : cy;
-        for (int y = lo + 1; y < hi; y++) if (!cpu_walkable(world->tiles[y][cx])) return false;
-        return true;
-    }
-    if (cy == ty) {
-        int lo = cx < tx ? cx : tx, hi = cx < tx ? tx : cx;
-        for (int x = lo + 1; x < hi; x++) if (!cpu_walkable(world->tiles[cy][x])) return false;
-        return true;
-    }
-    return false;
-}
-
-// Face toward a target position
-static uint8_t cpu_face_toward(Actor* a, int cx, int cy, int tx, int ty) {
-    if (tx > cx && a->facing != DIR_RIGHT) return NET_INPUT_RIGHT | NET_INPUT_STOP;
-    if (tx < cx && a->facing != DIR_LEFT)  return NET_INPUT_LEFT | NET_INPUT_STOP;
-    if (ty > cy && a->facing != DIR_DOWN)  return NET_INPUT_DOWN | NET_INPUT_STOP;
-    if (ty < cy && a->facing != DIR_UP)    return NET_INPUT_UP | NET_INPUT_STOP;
-    return 0;
-}
-
-// ==================== Main CPU Decision Loop ====================
-
+// ---- main entry
 uint8_t cpu_generate_input(App* app, World* world, int p) {
     Actor* actor = &world->actors[p];
     if (actor->is_dead) return 0;
@@ -1028,762 +926,450 @@ uint8_t cpu_generate_input(App* app, World* world, int p) {
     int cy = (actor->pos.y - 30) / 10;
     if (cx < 0 || cx >= MAP_WIDTH || cy < 0 || cy >= MAP_HEIGHT) return 0;
 
+    // Only re-decide on tile-aligned ticks; otherwise let movement carry us.
     if (actor->pos.x % 10 != 5 || (actor->pos.y - 30) % 10 != 5) return 0;
 
-    // Mark visited only when arriving at a new tile
-    if (cx != cpu_last_tile_x[p] || cy != cpu_last_tile_y[p]) {
-        cpu_last_tile_x[p] = cx;
-        cpu_last_tile_y[p] = cy;
-        if (cpu_visited[p][cy][cx] < 250) {
-            int nv = cpu_visited[p][cy][cx] + 80;
-            cpu_visited[p][cy][cx] = nv > 250 ? 250 : nv;
+    CpuState* st = &cpu_state[p];
+
+    cpu_build_danger(world);
+    st->combat = COMBAT_NONE;
+
+    // Mark visited (heat increases each tick we sit on a cell)
+    if (st->visited[cy][cx] < 250) st->visited[cy][cx]++;
+    // Periodic decay so old heat fades and we'll revisit areas eventually.
+    if ((world->round_counter & 0x3F) == 0) {
+        for (int yy = 0; yy < MAP_HEIGHT; yy++)
+            for (int xx = 0; xx < MAP_WIDTH; xx++)
+                if (st->visited[yy][xx] > 0) st->visited[yy][xx]--;
+    }
+
+    // Are there any hostile actors within a small radius? If so we shouldn't
+    // mistake "managing combat / fleeing a bomb" for being stuck.
+    bool combat_proximity = false;
+    {
+        for (int i = 0; i < world->num_actors && !combat_proximity; i++) {
+            if (i == p) continue;
+            Actor* e = &world->actors[i];
+            if (e->is_dead) continue;
+            if (i >= world->num_players) {
+                if (!e->is_active) continue;
+                if (e->kind == ACTOR_CLONE && e->clone_owner == p) continue;
+            }
+            int ex = e->pos.x / 10, ey = (e->pos.y - 30) / 10;
+            if (abs(ex - cx) + abs(ey - cy) <= 4) combat_proximity = true;
         }
-        cpu_stuck_counter[p] = 0; // moved to new tile, reset stuck
+    }
+
+    // Stall detection: if we have not actually moved for several tile ticks
+    // (stuck pushing an immovable boulder, oscillating between two equally
+    // attractive goals, etc.) blacklist the current goal and break out with a
+    // burst of random walking.
+    if (cx == st->last_tile_x && cy == st->last_tile_y) {
+        // Don't accumulate stall ticks while we're managing bombs or enemies.
+        if (!combat_proximity && cpu_danger[cy][cx] == 0xFFFF) st->stuck_ticks++;
     } else {
-        cpu_stuck_counter[p]++;
+        st->stuck_ticks = 0;
+        st->last_tile_x = cx; st->last_tile_y = cy;
     }
-    if (world->round_counter % 100 == 0) cpu_decay_visited(p);
-
-    // If truly stuck looping (>60 ticks on same tile or very high visited all around),
-    // pick a random walkable/diggable direction to break out
-    if (cpu_stuck_counter[p] > 60) {
-        cpu_stuck_counter[p] = 0;
-        int start = rand() % 4;
-        for (int i = 0; i < 4; i++) {
-            int d = (start + i) % 4;
-            int nx = cx + DDX[d], ny = cy + DDY[d];
-            if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT
-                && (cpu_walkable(world->tiles[ny][nx]) || cpu_diggable(world->tiles[ny][nx]))) {
-                cpu_last_dir[p] = d;
-                return DIR_FLAGS[d];
-            }
-        }
-    }
-
-    // Search budget: full map when visible, limited in darkness
-    int search_limit = world->darkness ? 600 : ASTAR_MAX;
-
-    int danger = cpu_danger(world, cx, cy);
-    bool in_danger = danger > 0;
-
-    // Flee mode: after placing a bomb, immediately flee regardless of think delay
-    // Also stay in flee mode if still in serious danger
-    if (cpu_flee_mode[p] || danger > 30) {
-        cpu_flee_mode[p] = false;
-        int best = -1, best_score = -9999;
-        for (int d = 0; d < 4; d++) {
-            int nx = cx + DDX[d], ny = cy + DDY[d];
-            if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) continue;
-            if (!cpu_walkable(world->tiles[ny][nx])) continue;
-            int ndanger = cpu_danger(world, nx, ny);
-            int score = -ndanger * 10;
-            // Check 2 tiles ahead: prefer paths that lead to even safer cells
-            for (int d2 = 0; d2 < 4; d2++) {
-                int nx2 = nx + DDX[d2], ny2 = ny + DDY[d2];
-                if (nx2 >= 0 && nx2 < MAP_WIDTH && ny2 >= 0 && ny2 < MAP_HEIGHT
-                    && cpu_walkable(world->tiles[ny2][nx2]))
-                    score = score > (-cpu_danger(world, nx2, ny2) * 5) ? score : (-cpu_danger(world, nx2, ny2) * 5);
-            }
-            // Prefer getting off the cross axis of bombs
-            for (int m = world->num_players; m < world->num_actors; m++) {
-                if (world->actors[m].is_dead || !world->actors[m].is_active) continue;
-                if (world->actors[m].kind == ACTOR_CLONE && world->actors[m].clone_owner == p) continue;
-                int mx = world->actors[m].pos.x / 10, my = (world->actors[m].pos.y - 30) / 10;
-                score += abs(nx - mx) + abs(ny - my);
-            }
-            if (score > best_score) { best_score = score; best = d; }
-        }
-        if (best >= 0) {
-            // Keep flee mode active if destination is still seriously dangerous
-            int nx = cx + DDX[best], ny = cy + DDY[best];
-            if (cpu_danger(world, nx, ny) > 20) cpu_flee_mode[p] = true;
-            cpu_last_dir[p] = best;
-            return DIR_FLAGS[best];
-        }
-    }
-
-    // Any bomb danger at all bypasses think delay — always react immediately
-    if (in_danger) {
-        // handled above in flee mode
-    }
-
-    if (!in_danger) {
-        if (cpu_think_delay[p] > 0) {
-            // Check: are we pushing into an immovable object? If so, force new decision
-            int fx = cx + DDX[actor->facing], fy = cy + DDY[actor->facing];
-            bool blocked_ahead = false;
-            if (fx >= 0 && fx < MAP_WIDTH && fy >= 0 && fy < MAP_HEIGHT) {
-                uint8_t ft = world->tiles[fy][fx];
-                if (!cpu_walkable(ft) && !cpu_diggable(ft) && ft != TILE_PASSAGE)
-                    blocked_ahead = true;
-                // Boulder/pushable against wall = immovable
-                if (ft == TILE_BOULDER || (ft >= 0x57 && ft <= 0x59)) {
-                    int bx = fx + DDX[actor->facing], by = fy + DDY[actor->facing];
-                    if (bx < 0 || bx >= MAP_WIDTH || by < 0 || by >= MAP_HEIGHT
-                        || !is_passable(world->tiles[by][bx]))
-                        blocked_ahead = true;
+    if (st->stuck_ticks > 30 && st->unstick_steps == 0) {
+        // Add the current goal to the blacklist so we won't pick it again soon.
+        if (st->goal_kind != GOAL_NONE) {
+            for (int i = 0; i < 4; i++) {
+                if (st->blacklist_ttl[i] == 0) {
+                    st->blacklist_x[i] = st->goal_x;
+                    st->blacklist_y[i] = st->goal_y;
+                    st->blacklist_ttl[i] = 400;
+                    break;
                 }
             }
-            if (!blocked_ahead) {
-                cpu_think_delay[p]--;
-                return 0; // keep current movement
-            }
-            // Blocked: cancel delay and make a new decision now
-            cpu_think_delay[p] = 0;
         }
-        if (cpu_think_delay[p] <= 0)
-            cpu_think_delay[p] = cpu_random_delay(CPU_THINK_MIN_DELAY, CPU_THINK_MAX_DELAY);
+        st->goal_kind = GOAL_NONE;
+        st->path_len = 0;
+        st->stuck_ticks = 0;
+        st->unstick_steps = 6;
+    }
+    for (int i = 0; i < 4; i++) if (st->blacklist_ttl[i] > 0) st->blacklist_ttl[i]--;
+    if (st->unstick_steps > 0) {
+        st->unstick_steps--;
+        int start = rand() % 4;
+        for (int k = 0; k < 4; k++) {
+            int d = (start + k) % 4;
+            int nx2 = cx + DDX[d], ny2 = cy + DDY[d];
+            if (nx2 < 0 || nx2 >= MAP_WIDTH || ny2 < 0 || ny2 >= MAP_HEIGHT) continue;
+            if (!cpu_walkable(world->tiles[ny2][nx2])) continue;
+            return DIR_FLAGS[d];
+        }
     }
 
-    bool has_bombs = false;
-    for (int w = 0; w < EQUIP_TOTAL; w++)
-        if (w != EQUIP_SMALL_PICKAXE && w != EQUIP_LARGE_PICKAXE && w != EQUIP_DRILL && w != EQUIP_ARMOR)
-            if (app->player_inventory[p][w] > 0) { has_bombs = true; break; }
-    int drill = cpu_drill_power(app, p);
+    // If we've reached the cached goal or moved off-path, replan.
+    bool need_plan = (st->path_len == 0)
+        || (st->goal_kind != GOAL_NONE && cx == st->goal_x && cy == st->goal_y)
+        || (st->path_len > 0 && (st->path_x[0] != cx + DDX[0] && st->path_x[0] != cx + DDX[1]
+                                  && st->path_x[0] != cx + DDX[2] && st->path_x[0] != cx + DDX[3]
+                                  && !(st->path_x[0] == cx && st->path_y[0] == cy)));
+    // Always replan: cheap enough on a 64x45 grid and avoids stale paths after wall changes.
+    need_plan = true;
+    if (need_plan) cpu_replan(app, world, p, cx, cy);
 
-    // Safety: check escape for the actual selected weapon's blast radius
-    int sel_blast = 2; // default small bomb
-    switch (actor->selected_weapon) {
-        case EQUIP_BIG_BOMB: case EQUIP_LARGE_RADIO: sel_blast = 3; break;
-        case EQUIP_DYNAMITE: case EQUIP_NAPALM: sel_blast = 4; break;
-        case EQUIP_ATOMIC_BOMB: sel_blast = 6; break;
-        default: sel_blast = 2; break;
-    }
-    bool safe_to_bomb = has_bombs && cpu_can_bomb_safely(world, cx, cy, sel_blast);
-
-    // ===== 1. DANGER: flee from bombs, use super drill if trapped =====
-    if (in_danger) {
-        int best = -1, best_sev = danger;
+    // Standing inside ANY bomb's blast cross? Bolt out of the cross. We never
+    // want to camp on top of (or in line with) our own bomb. Strategy:
+    //   1. Prefer a fully-safe neighbour (cpu_danger == 0xFFFF).
+    //   2. Otherwise prefer the neighbour with the highest "fleeability" score
+    //      = (look two tiles ahead in that direction; reward leaving the cross).
+    //   3. As a last resort just pick any walkable neighbour so we keep moving.
+    if (cpu_danger[cy][cx] < 0xFFFF) {
+        int best_dir = -1;
+        int best_score = -1;
         for (int d = 0; d < 4; d++) {
-            int nx = cx + DDX[d], ny = cy + DDY[d];
-            if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) continue;
-            if (!cpu_walkable(world->tiles[ny][nx]) && !cpu_diggable(world->tiles[ny][nx])) continue;
-            int sev = cpu_danger(world, nx, ny);
-            if (sev < best_sev) { best_sev = sev; best = d; }
+            int ax = cx + DDX[d], ay = cy + DDY[d];
+            if (ax < 0 || ax >= MAP_WIDTH || ay < 0 || ay >= MAP_HEIGHT) continue;
+            uint8_t at = world->tiles[ay][ax];
+            if (!cpu_walkable(at)) continue;
+            int score = 0;
+            if (cpu_danger[ay][ax] == 0xFFFF) score = 1000;
+            else score = (int)cpu_danger[ay][ax];
+            // Look two ahead — if that cell is safe, even better. Reward
+            // perpendicular escape from the cross.
+            int bx2 = ax + DDX[d], by2 = ay + DDY[d];
+            if (bx2 >= 0 && bx2 < MAP_WIDTH && by2 >= 0 && by2 < MAP_HEIGHT
+                && cpu_walkable(world->tiles[by2][bx2])
+                && cpu_danger[by2][bx2] == 0xFFFF) score += 500;
+            // Side step (perpendicular to bomb cross)
+            for (int d2 = 0; d2 < 4; d2++) {
+                if (d2 == d) continue;
+                int sx = ax + DDX[d2], sy = ay + DDY[d2];
+                if (sx < 0 || sx >= MAP_WIDTH || sy < 0 || sy >= MAP_HEIGHT) continue;
+                if (cpu_walkable(world->tiles[sy][sx]) && cpu_danger[sy][sx] == 0xFFFF) {
+                    score += 200; break;
+                }
+            }
+            score += rand() % 30; // jitter so flee feels less mechanical
+            if (score > best_score) { best_score = score; best_dir = d; }
         }
-        if (best >= 0) { cpu_last_dir[p] = best; return DIR_FLAGS[best]; }
+        if (best_dir >= 0) {
+            st->goal_kind = GOAL_NONE;
+            st->path_len = 0;
+            st->needs_bomb = false;
+            st->combat = COMBAT_FLEE_BOMB; (void)st->combat;
+            return DIR_FLAGS[best_dir];
+        }
+    }
 
-        // Trapped: super drill to escape
-        if (app->player_inventory[p][EQUIP_SUPER_DRILL] > 0 && actor->super_drill_count == 0) {
-            uint8_t sw = cpu_select(app, actor, p, EQUIP_SUPER_DRILL);
-            return sw ? sw : cpu_place_bomb(p);
-        }
-        // Extinguisher: defuse adjacent bomb if timer allows
+    // ---- Specials: extinguisher / super drill / atomic / radio trigger ----
+    {
+        // EXTINGUISHER: defuse an adjacent ticking bomb if we have one and the
+        // bomb still has time to defuse (timer > 10).
         if (app->player_inventory[p][EQUIP_EXTINGUISHER] > 0) {
             for (int d = 0; d < 4; d++) {
-                int nx = cx + DDX[d], ny = cy + DDY[d];
-                if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT
-                    && cpu_is_bomb(world->tiles[ny][nx]) && world->timer[ny][nx] > 10) {
-                    uint8_t face = cpu_face_toward(actor, cx, cy, nx, ny);
-                    if (face) return face;
-                    uint8_t sw = cpu_select(app, actor, p, EQUIP_EXTINGUISHER);
-                    return sw ? sw : cpu_place_bomb(p);
+                int nx2 = cx + DDX[d], ny2 = cy + DDY[d];
+                if (nx2 < 0 || nx2 >= MAP_WIDTH || ny2 < 0 || ny2 >= MAP_HEIGHT) continue;
+                if (!cpu_is_bomb_tile(world->tiles[ny2][nx2])) continue;
+                if (world->timer[ny2][nx2] < 10) continue;
+                if (actor->selected_weapon != EQUIP_EXTINGUISHER) return NET_INPUT_CYCLE;
+                st->combat = COMBAT_DEFUSE;
+                return NET_INPUT_ACTION;
+            }
+        }
+        // RADIO TRIGGER: if we have a placed radio and an enemy / monster is in
+        // its blast cross, detonate it (handled by NET_INPUT_REMOTE).
+        {
+            uint8_t sr[4] = {0x63, 0x82, 0x67, 0x69};
+            uint8_t br[4] = {0x64, 0x83, 0x68, 0x6A};
+            bool trigger = false;
+            for (int ry = 0; ry < MAP_HEIGHT && !trigger; ry++)
+                for (int rx = 0; rx < MAP_WIDTH && !trigger; rx++) {
+                    uint8_t tt = world->tiles[ry][rx];
+                    bool mine_radio = (tt == sr[p] || tt == br[p]);
+                    if (!mine_radio) continue;
+                    int blast = (tt == br[p]) ? 3 : 2;
+                    // Don't blow ourselves up
+                    if ((cx == rx && abs(cy - ry) <= blast) || (cy == ry && abs(cx - rx) <= blast)) continue;
+                    for (int i = 0; i < world->num_actors; i++) {
+                        if (i == p || world->actors[i].is_dead) continue;
+                        if (i >= world->num_players) {
+                            if (!world->actors[i].is_active) continue;
+                            if (world->actors[i].kind == ACTOR_CLONE && world->actors[i].clone_owner == p) continue;
+                        }
+                        int ex = world->actors[i].pos.x / 10, ey = (world->actors[i].pos.y - 30) / 10;
+                        if ((ex == rx && abs(ey - ry) <= blast) || (ey == ry && abs(ex - rx) <= blast)) {
+                            trigger = true; break;
+                        }
+                    }
                 }
-            }
-        }
-        return DIR_FLAGS[rand() % 4];
-    }
-
-    // ===== 1a. GRAB ADJACENT VALUABLES — highest non-danger priority =====
-    // Pick up treasure, crates, medikits next to us. Prefer highest value.
-    {
-        int best_grab = -1, best_value = 0;
-        for (int d = 0; d < 4; d++) {
-            int nx = cx + DDX[d], ny = cy + DDY[d];
-            if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) continue;
-            uint8_t t = world->tiles[ny][nx];
-            int val = 0;
-            // Treasure values (matching game.c get_treasure_value)
-            if (t == 0x8F) val = 15;      // shield
-            else if (t == 0x90) val = 25;  // egg
-            else if (t == 0x91) val = 15;  // pile
-            else if (t == 0x92) val = 10;  // bracelet
-            else if (t == 0x93) val = 30;  // bar
-            else if (t == 0x94) val = 35;  // cross
-            else if (t == 0x95) val = 50;  // scepter
-            else if (t == 0x96) val = 65;  // rubin
-            else if (t == 0x9A) val = 100; // crown
-            else if (t == 0x6D) val = 1000; // diamond
-            else if (t == 0x73) val = 50;  // weapon crate — always valuable
-            else if (t == 0x79) val = 30;  // medikit
-            else if (t >= 0x8B && t <= 0x8E) val = 20; // pickaxes/drill items
-            if (val > best_value) { best_value = val; best_grab = d; }
-        }
-        if (best_grab >= 0) {
-            cpu_last_dir[p] = best_grab;
-            return DIR_FLAGS[best_grab];
-        }
-        // Also check 2 tiles away — chase nearby high-value items through passable tiles
-        for (int d = 0; d < 4; d++) {
-            int nx = cx + DDX[d], ny = cy + DDY[d];
-            if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) continue;
-            if (!cpu_walkable(world->tiles[ny][nx])) continue;
-            int nx2 = nx + DDX[d], ny2 = ny + DDY[d];
-            if (nx2 < 0 || nx2 >= MAP_WIDTH || ny2 < 0 || ny2 >= MAP_HEIGHT) continue;
-            uint8_t t = world->tiles[ny2][nx2];
-            // Only chase high-value items (crown=100, diamond=1000, scepter=50+)
-            if (t == 0x9A || t == 0x6D || t == 0x95 || t == 0x96 || t == 0x73) {
-                cpu_last_dir[p] = d;
-                return DIR_FLAGS[d];
-            }
+            if (trigger) { st->combat = COMBAT_REMOTE; return NET_INPUT_REMOTE; }
         }
     }
 
-    // ===== 1b. MONSTER THREAT: survive monster encounters =====
-    // Monsters are actors[num_players..num_actors-1]. Skip own clones.
-    // Enemy clones are treated as hostile — attack them.
+    // ---- Combat: ranged / bomb adjacent enemies / flee if outgunned ----
     {
-        int nearest_mdist = 999, nearest_mx = 0, nearest_my = 0;
-        (void)0;
-        for (int m = world->num_players; m < world->num_actors; m++) {
-            if (world->actors[m].is_dead || !world->actors[m].is_active) continue;
-            if (world->actors[m].kind == ACTOR_CLONE && world->actors[m].clone_owner == p) continue;
-            int mx = world->actors[m].pos.x / 10;
-            int my = (world->actors[m].pos.y - 30) / 10;
-            int md = abs(mx - cx) + abs(my - cy);
-            if (md < nearest_mdist) {
-                nearest_mdist = md; nearest_mx = mx; nearest_my = my;
+        int near_x = -1, near_y = -1, near_d = 999;
+        bool near_is_player = false;
+        int crowd_count = 0;
+        for (int i = 0; i < world->num_actors; i++) {
+            if (i == p) continue;
+            Actor* e = &world->actors[i];
+            if (e->is_dead) continue;
+            if (i >= world->num_players) {
+                if (!e->is_active) continue;
+                if (e->kind == ACTOR_CLONE && e->clone_owner == p) continue;
             }
+            int ex = e->pos.x / 10, ey = (e->pos.y - 30) / 10;
+            int d = abs(ex - cx) + abs(ey - cy);
+            if (d <= 5) crowd_count++;
+            if (d < near_d) { near_d = d; near_x = ex; near_y = ey; near_is_player = (i < world->num_players); }
         }
 
-        if (nearest_mdist <= 3) {
-            // Monster/enemy clone is very close — fight or flight
-            // Enemy clones: always fight aggressively (they're dangerous and worth killing)
-            // Regular monsters: fight if possible, flee if not
+        // NUKE the crowd if surrounded and we can run far enough.
+        if (crowd_count >= 2 && app->player_inventory[p][EQUIP_ATOMIC_BOMB] > 0
+            && cpu_can_escape_bomb(world, cx, cy)
+            && cpu_danger[cy][cx] == 0xFFFF) {
+            if (actor->selected_weapon != EQUIP_ATOMIC_BOMB) return NET_INPUT_CYCLE;
+            st->combat = COMBAT_NUKE;
+            return NET_INPUT_ACTION;
+        }
 
-            // Ranged weapons in line of sight
-            bool mlos = cpu_line_of_sight(world, cx, cy, nearest_mx, nearest_my);
-            if (mlos && nearest_mdist >= 2) {
-                uint8_t face = cpu_face_toward(actor, cx, cy, nearest_mx, nearest_my);
-                if (face) return face;
-                // Try any available weapon
-                uint8_t act = cpu_use_any_weapon(app, actor, p);
-                if (act == NET_INPUT_ACTION) return cpu_place_bomb(p);
-                if (act) return act;
-            }
-
-            // Adjacent: drop weapon and flee
-            if (nearest_mdist <= 1) {
-                uint8_t act = cpu_use_any_weapon(app, actor, p);
-                if (act == NET_INPUT_ACTION) { cpu_flee_mode[p] = true; return NET_INPUT_ACTION; }
-                if (act) return act;
-                int best_flee = -1, best_flee_dist = 0;
-                for (int d = 0; d < 4; d++) {
-                    int nx = cx + DDX[d], ny = cy + DDY[d];
-                    if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) continue;
-                    if (!cpu_walkable(world->tiles[ny][nx])) continue;
-                    int fd = abs(nx - nearest_mx) + abs(ny - nearest_my);
-                    if (fd > best_flee_dist) { best_flee_dist = fd; best_flee = d; }
+        if (near_d <= 5 && near_x >= 0) {
+            // RANGED: grenade or flamethrower if we have line of sight.
+            bool los = (near_x == cx) || (near_y == cy);
+            if (los) {
+                int hit = 0;
+                int sx = (near_x > cx) - (near_x < cx);
+                int sy = (near_y > cy) - (near_y < cy);
+                for (int s = 1; s < near_d; s++) {
+                    int wx = cx + sx * s, wy = cy + sy * s;
+                    if (!cpu_walkable(world->tiles[wy][wx])) { hit = 1; break; }
                 }
-                // Drop a mine/bomb on our way out if safe
-                if (best_flee >= 0 && safe_to_bomb) {
-                    if (app->player_inventory[p][EQUIP_MINE] > 0) {
-                        uint8_t sw = cpu_select(app, actor, p, EQUIP_MINE);
-                        if (sw) return sw;
-                        cpu_flee_mode[p] = true;
+                if (!hit) {
+                    Direction face_want;
+                    if (sx > 0) face_want = DIR_RIGHT;
+                    else if (sx < 0) face_want = DIR_LEFT;
+                    else if (sy > 0) face_want = DIR_DOWN;
+                    else face_want = DIR_UP;
+                    if (app->player_inventory[p][EQUIP_FLAMETHROWER] > 0 && near_d <= 4) {
+                        if (actor->facing != face_want) {
+                            int df = face_want == DIR_UP ? NET_INPUT_UP
+                                  : face_want == DIR_DOWN ? NET_INPUT_DOWN
+                                  : face_want == DIR_LEFT ? NET_INPUT_LEFT : NET_INPUT_RIGHT;
+                            return (uint8_t)df;
+                        }
+                        if (actor->selected_weapon != EQUIP_FLAMETHROWER) return NET_INPUT_CYCLE;
+                        st->combat = COMBAT_RANGED;
                         return NET_INPUT_ACTION;
                     }
-                    if (app->player_inventory[p][actor->selected_weapon] > 0) {
-                        cpu_flee_mode[p] = true;
+                    if (app->player_inventory[p][EQUIP_GRENADE] > 0 && near_d >= 2 && near_d <= 5) {
+                        if (actor->facing != face_want) {
+                            int df = face_want == DIR_UP ? NET_INPUT_UP
+                                  : face_want == DIR_DOWN ? NET_INPUT_DOWN
+                                  : face_want == DIR_LEFT ? NET_INPUT_LEFT : NET_INPUT_RIGHT;
+                            return (uint8_t)df;
+                        }
+                        if (actor->selected_weapon != EQUIP_GRENADE) return NET_INPUT_CYCLE;
+                        st->combat = COMBAT_RANGED;
                         return NET_INPUT_ACTION;
                     }
                 }
-                if (best_flee >= 0) return DIR_FLAGS[best_flee];
-            }
-
-            // Monster at 2-3 tiles: place bomb between us if safe, then retreat
-            if (nearest_mdist <= 3 && safe_to_bomb && has_bombs) {
-                // Face toward monster and place bomb
-                uint8_t face = cpu_face_toward(actor, cx, cy, nearest_mx, nearest_my);
-                if (face) return face;
-                return cpu_place_bomb(p);
-            }
-
-            // Can't fight — just run away
-            {
-                int best = -1, best_dist = 0;
-                for (int d = 0; d < 4; d++) {
-                    int nx = cx + DDX[d], ny = cy + DDY[d];
-                    if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) continue;
-                    if (!cpu_walkable(world->tiles[ny][nx])) continue;
-                    int fd = abs(nx - nearest_mx) + abs(ny - nearest_my);
-                    if (fd > best_dist) { best_dist = fd; best = d; }
-                }
-                if (best >= 0) return DIR_FLAGS[best];
             }
         }
 
-        // Monster at 4-6 tiles: be aware, factor into pathfinding decisions
-        // (handled by A* which avoids monster positions via player-occupied cost)
-    }
-
-    // ===== 1c. UNSTICK: if near another CPU player, escape the corridor =====
-    {
-        int stuck_cpu = -1;
-        int stuck_ox = 0, stuck_oy = 0;
-        for (int i = 0; i < world->num_players; i++) {
-            if (i == p || world->actors[i].is_dead || !is_cpu_player(app, i)) continue;
-            int ox = world->actors[i].pos.x / 10, oy = (world->actors[i].pos.y - 30) / 10;
-            if (abs(ox - cx) + abs(oy - cy) <= 2) {
-                stuck_cpu = i; stuck_ox = ox; stuck_oy = oy; break;
+        if (near_d <= 3 && near_x >= 0) {
+            bool has_bombs_now = cpu_has_bombs(app, p);
+            bool already_bomb_here = cpu_danger[cy][cx] != 0xFFFF;
+            if (has_bombs_now && !already_bomb_here && cpu_can_escape_bomb(world, cx, cy)) {
+                int sel = actor->selected_weapon;
+                bool sel_is_bomb = sel != EQUIP_SMALL_PICKAXE && sel != EQUIP_LARGE_PICKAXE
+                    && sel != EQUIP_DRILL && sel != EQUIP_ARMOR
+                    && app->player_inventory[p][sel] > 0;
+                if (!sel_is_bomb) return NET_INPUT_CYCLE;
+                if ((rand() % 5) == 0) return 0;
+                st->combat = near_is_player ? COMBAT_ATTACK_PLAYER : COMBAT_ATTACK_MONSTER;
+                return NET_INPUT_ACTION;
             }
-        }
-        if (stuck_cpu >= 0) {
-            // Use player index as tiebreaker: lower index goes "away", higher tries perpendicular
-            bool i_yield = (p > stuck_cpu);
-
-            // First: try walkable direction away from the other CPU
-            int best = -1, best_score = -999;
+            // No bombs / no escape: flee directly away from the enemy.
+            int best_d = -1, best_score = -1;
             for (int d = 0; d < 4; d++) {
-                int nx = cx + DDX[d], ny = cy + DDY[d];
-                if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) continue;
-                bool occupied = false;
-                for (int j = 0; j < world->num_players; j++) {
-                    if (j == p || world->actors[j].is_dead) continue;
-                    if (world->actors[j].pos.x / 10 == nx && (world->actors[j].pos.y - 30) / 10 == ny)
-                        occupied = true;
-                }
-                if (occupied) continue;
-                int dist = abs(nx - stuck_ox) + abs(ny - stuck_oy);
-                bool perpendicular = (DDX[d] != 0 && stuck_oy == cy) || (DDY[d] != 0 && stuck_ox == cx);
-                int score = dist * 10;
-                // Yielding CPU prefers perpendicular directions (dig sideways to make bypass)
-                if (i_yield && perpendicular) score += 50;
-                if (cpu_walkable(world->tiles[ny][nx])) score += 20;
-                else if (cpu_diggable(world->tiles[ny][nx])) score += 10;
-                else if (cpu_bombable(world->tiles[ny][nx]) && has_bombs && safe_to_bomb) score += 5;
-                else continue;
-                if (score > best_score) { best_score = score; best = d; }
+                int nx2 = cx + DDX[d], ny2 = cy + DDY[d];
+                if (nx2 < 0 || nx2 >= MAP_WIDTH || ny2 < 0 || ny2 >= MAP_HEIGHT) continue;
+                if (!cpu_walkable(world->tiles[ny2][nx2])) continue;
+                if (cpu_danger[ny2][nx2] != 0xFFFF) continue;
+                int s = abs(nx2 - near_x) + abs(ny2 - near_y);
+                if (s > best_score) { best_score = s; best_d = d; }
             }
-            if (best >= 0) {
-                int nx = cx + DDX[best], ny = cy + DDY[best];
-                // If the best direction requires bombing, do it
-                if (!cpu_walkable(world->tiles[ny][nx]) && !cpu_diggable(world->tiles[ny][nx])
-                    && cpu_bombable(world->tiles[ny][nx]) && has_bombs && safe_to_bomb) {
-                    int bw = cpu_worth_bombing(world, nx, ny) ? cpu_pick_bomb_from(app, world, p, cx, cy, nx, ny) : -1;
-                    if (bw >= 0) { uint8_t sw = cpu_select(app, actor, p, bw); return sw ? sw : cpu_place_bomb(p); }
-                }
-                cpu_last_dir[p] = best;
-                return DIR_FLAGS[best];
+            if (best_d >= 0) {
+                st->combat = near_is_player ? COMBAT_FLEE_PLAYER : COMBAT_FLEE_MONSTER;
+                return DIR_FLAGS[best_d];
             }
         }
     }
 
-    // ===== 1c. REMOTE BOMBS: check if any placed radio has a target in blast range =====
-    {
-        // Find all placed radios belonging to this player
-        // Small radio blast = 2 cross, big radio blast = 3 cross
-        uint8_t sr[4], br[4]; // radio tile values per player
-        sr[0]=0x63; sr[1]=0x82; sr[2]=0x67; sr[3]=0x69;
-        br[0]=0x64; br[1]=0x83; br[2]=0x68; br[3]=0x6A;
-        bool should_trigger = false;
-
-        for (int ry = 0; ry < MAP_HEIGHT && !should_trigger; ry++) {
-            for (int rx = 0; rx < MAP_WIDTH && !should_trigger; rx++) {
-                uint8_t tile = world->tiles[ry][rx];
-                bool is_my_radio = (tile == sr[p] || tile == br[p]);
-                if (!is_my_radio) continue;
-                int blast = (tile == br[p]) ? 3 : 2;
-
-                // Check if any enemy player or monster is in blast cross
-                for (int i = 0; i < world->num_players && !should_trigger; i++) {
-                    if (i == p || world->actors[i].is_dead) continue;
-                    int ex = world->actors[i].pos.x / 10;
-                    int ey = (world->actors[i].pos.y - 30) / 10;
-                    if ((ex == rx && abs(ey - ry) <= blast) || (ey == ry && abs(ex - rx) <= blast))
-                        should_trigger = true;
-                }
-                // Also check monsters (actors beyond num_players)
-                for (int i = world->num_players; i < world->num_actors && !should_trigger; i++) {
-                    if (world->actors[i].is_dead) continue;
-                    int mx = world->actors[i].pos.x / 10;
-                    int my = (world->actors[i].pos.y - 30) / 10;
-                    if ((mx == rx && abs(my - ry) <= blast) || (my == ry && abs(mx - rx) <= blast))
-                        should_trigger = true;
-                }
-                // Check if radio would chain-detonate other bombs (extinguished bombs, nukes near it)
-                if (!should_trigger) {
-                    for (int dy = -blast; dy <= blast; dy++) {
-                        int ny = ry + dy;
-                        if (ny < 0 || ny >= MAP_HEIGHT) continue;
-                        if (ny >= 0 && ny < MAP_HEIGHT && cpu_is_bomb(world->tiles[ny][rx])) {
-                            // There's a bomb in blast range — would chain. Check if that chain hits enemies.
-                            for (int i = 0; i < world->num_players; i++) {
-                                if (i == p || world->actors[i].is_dead) continue;
-                                int ex = world->actors[i].pos.x / 10;
-                                int ey = (world->actors[i].pos.y - 30) / 10;
-                                if (abs(ex - rx) + abs(ey - ry) <= 5) should_trigger = true;
-                            }
-                        }
-                    }
-                    for (int dx = -blast; dx <= blast; dx++) {
-                        int nx = rx + dx;
-                        if (nx < 0 || nx >= MAP_WIDTH) continue;
-                        if (cpu_is_bomb(world->tiles[ry][nx])) {
-                            for (int i = 0; i < world->num_players; i++) {
-                                if (i == p || world->actors[i].is_dead) continue;
-                                int ex = world->actors[i].pos.x / 10;
-                                int ey = (world->actors[i].pos.y - 30) / 10;
-                                if (abs(ex - nx) + abs(ey - ry) <= 5) should_trigger = true;
-                            }
-                        }
-                    }
-                }
-
-                // Safety: don't trigger if we're in our own blast radius
-                if (should_trigger) {
-                    if ((cx == rx && abs(cy - ry) <= blast) || (cy == ry && abs(cx - rx) <= blast))
-                        should_trigger = false; // we'd hit ourselves
-                }
-            }
-        }
-        if (should_trigger) return NET_INPUT_REMOTE;
-
-        // Place radio bombs near chokepoints if we have them and an enemy is nearby
-        if ((app->player_inventory[p][EQUIP_LARGE_RADIO] > 0 || app->player_inventory[p][EQUIP_SMALL_RADIO] > 0)
-            && is_passable(world->tiles[cy][cx])) {
-            // Check if any enemy within 8 tiles — good ambush spot
-            for (int i = 0; i < world->num_players; i++) {
-                if (i == p || world->actors[i].is_dead) continue;
-                int ex = world->actors[i].pos.x / 10;
-                int ey = (world->actors[i].pos.y - 30) / 10;
-                int ed = abs(ex - cx) + abs(ey - cy);
-                if (ed >= 3 && ed <= 8) {
-                    // Place a radio if we're in a corridor or chokepoint
-                    int open_adj = 0;
-                    for (int d = 0; d < 4; d++) {
-                        int nx = cx + DDX[d], ny = cy + DDY[d];
-                        if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT
-                            && cpu_walkable(world->tiles[ny][nx])) open_adj++;
-                    }
-                    if (open_adj <= 2 && (world->tiles[cy][cx] == TILE_PASSAGE || cpu_is_treasure(world->tiles[cy][cx]))) {
-                        int radio = app->player_inventory[p][EQUIP_LARGE_RADIO] > 0 ? EQUIP_LARGE_RADIO : EQUIP_SMALL_RADIO;
-                        uint8_t sw = cpu_select(app, actor, p, radio);
-                        return sw ? sw : cpu_place_bomb(p);
-                    }
-                }
+    // ---- Activate SUPER_DRILL when about to grind a hard wall ----
+    if (actor->super_drill_count == 0 && app->player_inventory[p][EQUIP_SUPER_DRILL] > 0
+        && st->path_len > 0) {
+        int wx = st->path_x[0], wy = st->path_y[0];
+        if (wx >= 0 && wx < MAP_WIDTH && wy >= 0 && wy < MAP_HEIGHT) {
+            uint8_t wt = world->tiles[wy][wx];
+            int hits = world->hits[wy][wx];
+            if (hits <= 0) hits = cpu_initial_hits(wt);
+            int live_drill = world->actors[p].drilling > 0 ? world->actors[p].drilling : 1;
+            if (cpu_diggable(wt) && hits > 1500 && (hits / live_drill) > 200) {
+                if (actor->selected_weapon != EQUIP_SUPER_DRILL) return NET_INPUT_CYCLE;
+                st->combat = COMBAT_SUPER_DRILL;
+                return NET_INPUT_ACTION;
             }
         }
     }
 
-    // ===== 1d. HEAL: seek medikits when low health =====
-    if (actor->health < actor->max_health / 3) {
-        AStarResult r = cpu_astar(world, cx, cy, goal_medikit, NULL, drill, has_bombs, search_limit, p);
-        if (r.dir) {
-            if (r.needs_bomb) {
-                int tx = cx, ty = cy;
-                for (int d = 0; d < 4; d++) if (DIR_FLAGS[d] == r.dir) { tx=cx+DDX[d]; ty=cy+DDY[d]; }
-                int bw = cpu_worth_bombing(world, tx, ty) ? cpu_pick_bomb_from(app, world, p, cx, cy, tx, ty) : -1;
-                if (bw >= 0 && safe_to_bomb) { uint8_t sw = cpu_select(app, actor, p, bw); return sw ? sw : cpu_place_bomb(p); }
-            } else {
-                return r.dir;
-            }
-        }
+    if (st->path_len == 0) return NET_INPUT_STOP;
+
+    // Determine direction of first step.
+    int nx = st->path_x[0], ny = st->path_y[0];
+    int dir = -1;
+    for (int d = 0; d < 4; d++) if (cx + DDX[d] == nx && cy + DDY[d] == ny) { dir = d; break; }
+    if (dir < 0) { st->path_len = 0; return NET_INPUT_STOP; }
+
+    uint8_t t = world->tiles[ny][nx];
+    st->needs_bomb = false;
+
+    if (cpu_walkable(t)) {
+        return DIR_FLAGS[dir];
     }
-
-    // ===== 2. COMBAT: hunt enemies (players, clones, and monsters) =====
-    {
-        int best_e = -1, best_score = -999, bex = 0, bey = 0, best_d = 999;
-        // Target players
-        for (int i = 0; i < world->num_players; i++) {
-            if (i == p || world->actors[i].is_dead) continue;
-            int ex = world->actors[i].pos.x / 10, ey = (world->actors[i].pos.y - 30) / 10;
-            int d = abs(ex - cx) + abs(ey - cy);
-            int value = (int)(app->player_cash[i] / 5) + (int)(world->cash_earned[i] / 3);
-            if (!app->options.win_by_money) value += 50;
-            int score = value - d;
-            if (score > best_score || (score == best_score && d < best_d)) {
-                best_score = score; best_e = i; bex = ex; bey = ey; best_d = d;
-            }
+    if (t == TILE_BOULDER) {
+        if (cpu_boulder_pushable(world, nx, ny, nx - cx, ny - cy)) {
+            // Walking into the boulder pushes it (engine handles the push).
+            return DIR_FLAGS[dir];
         }
-        // Target monsters (clones, furries, grenadiers, etc.) — they're dangerous
-        for (int m = world->num_players; m < world->num_actors; m++) {
-            if (world->actors[m].is_dead || !world->actors[m].is_active) continue;
-            if (world->actors[m].kind == ACTOR_CLONE && world->actors[m].clone_owner == p) continue;
-            int ex = world->actors[m].pos.x / 10, ey = (world->actors[m].pos.y - 30) / 10;
-            int d = abs(ex - cx) + abs(ey - cy);
-            // Clones: medium value. Other monsters: low value but still worth killing if close
-            int value = (world->actors[m].kind == ACTOR_CLONE) ? 30 : 15;
-            int score = value - d;
-            if (score > best_score || (score == best_score && d < best_d)) {
-                best_score = score; best_e = m; bex = ex; bey = ey; best_d = d;
-            }
-        }
-        if (best_e >= 0) {
-            bool los = cpu_line_of_sight(world, cx, cy, bex, bey);
+        // Boulder is wedged — fall through into the bomb branch below by
+        // pretending it's a bombable wall.
+    }
+    // Compute the cheaper of dig vs bomb for this wall, matching BFS cost.
+    int live_drill = world->actors[p].drilling;
+    if (live_drill <= 0) live_drill = cpu_drill_power(app, p);
+    bool has_bombs = cpu_has_bombs(app, p);
+    int dig_ticks = -1;
+    if (live_drill > 0 && cpu_diggable(t)) {
+        int hits = world->hits[ny][nx];
+        if (hits <= 0) hits = cpu_initial_hits(t);
+        if (hits >= 0) dig_ticks = WALK_TICKS + (hits + live_drill - 1) / live_drill;
+    }
+    int bomb_ticks = (has_bombs && cpu_bombable(t)) ? BOMB_TICKS : -1;
+    bool prefer_bomb = (bomb_ticks >= 0) && (dig_ticks < 0 || bomb_ticks < dig_ticks);
 
-            // ON the enemy or adjacent: drop bomb and flee
-            if (best_d <= 1) {
-                uint8_t act = cpu_use_any_weapon(app, actor, p);
-                if (act == NET_INPUT_ACTION) { cpu_flee_mode[p] = true; return NET_INPUT_ACTION; }
-                if (act) return act; // cycling to a weapon
-            }
-
-            // Ranged weapons in line of sight
-            if (los && best_d <= 6) {
-                // Face toward enemy first
-                uint8_t face = cpu_face_toward(actor, cx, cy, bex, bey);
-                if (face) return face;
-                // Flamethrower (range 6)
-                if (app->player_inventory[p][EQUIP_FLAMETHROWER] > 0) {
-                    bool ok; uint8_t sw = cpu_switch_to(app, actor, p, EQUIP_FLAMETHROWER, &ok);
-                    return (ok && sw) ? sw : (ok ? cpu_place_bomb(p) : 0);
-                }
-                // Grenade (range 2-5)
-                if (best_d >= 2 && best_d <= 5 && app->player_inventory[p][EQUIP_GRENADE] > 0) {
-                    bool ok; uint8_t sw = cpu_switch_to(app, actor, p, EQUIP_GRENADE, &ok);
-                    return (ok && sw) ? sw : (ok ? cpu_place_bomb(p) : 0);
-                }
-            }
-
-            // Medium range (2-4): place bomb if safe and in LOS, or bomb through thin wall
-            if (best_d <= 4 && safe_to_bomb) {
-                if (los) {
-                    // Place bomb in the enemy's path
-                    uint8_t act = cpu_use_any_weapon(app, actor, p);
-                    if (act == NET_INPUT_ACTION) return cpu_place_bomb(p);
-                    if (act) return act;
-                }
-                // Bomb through thin wall
-                for (int d = 0; d < 4; d++) {
-                    int wx = cx + DDX[d], wy = cy + DDY[d];
-                    if (wx < 0 || wx >= MAP_WIDTH || wy < 0 || wy >= MAP_HEIGHT) continue;
-                    if (!cpu_bombable(world->tiles[wy][wx])) continue;
-                    int fx = wx + DDX[d], fy = wy + DDY[d];
-                    if (fx < 0 || fx >= MAP_WIDTH || fy < 0 || fy >= MAP_HEIGHT) continue;
-                    if (abs(fx - bex) + abs(fy - bey) <= 1) {
-                        uint8_t face = cpu_face_toward(actor, cx, cy, wx, wy);
-                        if (face) return face;
-                        int bw = cpu_worth_bombing(world, wx, wy) ? cpu_pick_bomb_from(app, world, p, cx, cy, wx, wy) : -1;
-                        if (bw >= 0) {
-                            bool ok; uint8_t sw = cpu_switch_to(app, actor, p, bw, &ok);
-                            return (ok && sw) ? sw : (ok ? cpu_place_bomb(p) : 0);
-                        }
-                    }
-                }
-            }
-
-            // Medium range without LOS: only bomb if adjacent wall is between us and enemy
-            // (don't waste bombs in open space when enemy is behind a far wall)
-            if (best_d <= 4 && safe_to_bomb && has_bombs && !los) {
-                // Check if there's a bombable wall in the direction of the enemy
-                // AND the enemy is just beyond that wall
-                for (int d = 0; d < 4; d++) {
-                    int wx = cx + DDX[d], wy = cy + DDY[d];
-                    if (wx < 0 || wx >= MAP_WIDTH || wy < 0 || wy >= MAP_HEIGHT) continue;
-                    if (!cpu_bombable(world->tiles[wy][wx])) continue;
-                    // Check: would clearing this wall get us closer to the enemy?
-                    int fx = wx + DDX[d], fy = wy + DDY[d];
-                    if (fx >= 0 && fx < MAP_WIDTH && fy >= 0 && fy < MAP_HEIGHT
-                        && (abs(fx - bex) + abs(fy - bey)) < best_d) {
-                        uint8_t face = cpu_face_toward(actor, cx, cy, wx, wy);
-                        if (face) return face;
-                        int bw = cpu_worth_bombing(world, wx, wy) ? cpu_pick_bomb_from(app, world, p, cx, cy, wx, wy) : -1;
-                        if (bw >= 0) { uint8_t sw = cpu_select(app, actor, p, bw); return sw ? sw : cpu_place_bomb(p); }
-                    }
-                }
-            }
-            // Push bombs/barrels/boulders toward enemy
+    if (prefer_bomb) {
+        // No facing required: bomb's cross blast hits the wall regardless of
+        // which way we're looking. (Earlier `DIR_FLAGS[dir] | NET_INPUT_STOP`
+        // hack was a no-op because the OR collapsed direction bits into STOP.)
+        if (!cpu_can_escape_bomb(world, cx, cy)) {
+            // Try digging instead if possible
+            if (dig_ticks >= 0) return DIR_FLAGS[dir];
             for (int d = 0; d < 4; d++) {
-                int nx = cx + DDX[d], ny = cy + DDY[d];
-                if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) continue;
-                uint8_t tile = world->tiles[ny][nx];
-                int bx = nx + DDX[d], by = ny + DDY[d];
-                if (bx < 0 || bx >= MAP_WIDTH || by < 0 || by >= MAP_HEIGHT) continue;
-                if (!is_passable(world->tiles[by][bx])) continue;
-                // Check no actor blocking push destination
-                bool blocked = false;
-                for (int ai = 0; ai < world->num_actors; ai++) {
-                    if (world->actors[ai].is_dead) continue;
-                    if (world->actors[ai].pos.x / 10 == bx && (world->actors[ai].pos.y - 30) / 10 == by)
-                        { blocked = true; break; }
-                }
-                if (blocked) continue;
-                bool toward = (DDX[d] != 0 && bey == ny && (bex - nx) * DDX[d] > 0)
-                           || (DDY[d] != 0 && bex == nx && (bey - ny) * DDY[d] > 0);
-                if (toward && ((cpu_is_bomb(tile) && world->timer[ny][nx] > 30) || tile == TILE_BARREL))
+                int wx = cx + DDX[d], wy = cy + DDY[d];
+                if (wx >= 0 && wx < MAP_WIDTH && wy >= 0 && wy < MAP_HEIGHT && cpu_walkable(world->tiles[wy][wx]))
                     return DIR_FLAGS[d];
             }
-            // Tactical: place bomb to cut off enemy escape routes
-            // If enemy has limited escape (1-2 open adjacent tiles), bomb near them
-            if (best_d <= 5 && safe_to_bomb && has_bombs) {
-                int enemy_exits = 0;
-                for (int d = 0; d < 4; d++) {
-                    int enx = bex + DDX[d], eny = bey + DDY[d];
-                    if (enx >= 0 && enx < MAP_WIDTH && eny >= 0 && eny < MAP_HEIGHT
-                        && cpu_walkable(world->tiles[eny][enx]) && cpu_danger(world, enx, eny) == 0)
-                        enemy_exits++;
-                }
-                if (enemy_exits <= 2 && los) {
-                    // Enemy is cornered — place bomb to seal them in
-                    uint8_t act = cpu_use_any_weapon(app, actor, p);
-                    if (act == NET_INPUT_ACTION) return cpu_place_bomb(p);
-                    if (act) return act;
-                }
-            }
-            // Path toward enemy — always pursue (killing = cash in both modes)
-            {
-                EnemyGoalCtx eg = {bex, bey};
-                AStarResult r = cpu_astar(world, cx, cy, goal_near_enemy, &eg, drill, has_bombs, search_limit, p);
-                if (r.dir) {
-                    if (r.needs_bomb) {
-                        int tx = cx, ty = cy;
-                        for (int d = 0; d < 4; d++) if (DIR_FLAGS[d] == r.dir) { tx = cx+DDX[d]; ty = cy+DDY[d]; }
-                        int bw = cpu_worth_bombing(world, tx, ty) ? cpu_pick_bomb_from(app, world, p, cx, cy, tx, ty) : -1;
-                        if (bw >= 0 && safe_to_bomb) { uint8_t sw = cpu_select(app, actor, p, bw); return sw ? sw : cpu_place_bomb(p); }
-                        // Bombing failed — don't walk into the wall, skip to next section
-                    } else {
-                        for (int d = 0; d < 4; d++) if (DIR_FLAGS[d] == r.dir) cpu_last_dir[p] = d;
-                        return r.dir;
-                    }
-                }
-            }
+            return NET_INPUT_STOP;
         }
+        // Make sure we're holding a usable bomb. If currently on a non-bomb,
+        // cycle weapons until we land on something throwable.
+        int sel = actor->selected_weapon;
+        bool sel_is_bomb = sel != EQUIP_SMALL_PICKAXE && sel != EQUIP_LARGE_PICKAXE
+            && sel != EQUIP_DRILL && sel != EQUIP_ARMOR
+            && app->player_inventory[p][sel] > 0;
+        if (!sel_is_bomb) return NET_INPUT_CYCLE;
+        st->needs_bomb = true;
+        if ((rand() % 6) == 0) return 0;  // jittered placement
+        return NET_INPUT_ACTION;
+    }
+    if (dig_ticks >= 0) return DIR_FLAGS[dir];
+    return NET_INPUT_STOP;
+}
+
+// ==================== Debug overlay ====================
+
+static bool cpu_debug_on = false;
+void cpu_debug_toggle(void) { cpu_debug_on = !cpu_debug_on; }
+bool cpu_debug_enabled(void) { return cpu_debug_on; }
+void cpu_debug_set(bool on) { cpu_debug_on = on; }
+
+static const char* cpu_combat_verb(CombatState c) {
+    switch (c) {
+        case COMBAT_ATTACK_PLAYER:  return "ATK player";
+        case COMBAT_ATTACK_MONSTER: return "ATK monster";
+        case COMBAT_FLEE_PLAYER:    return "DEF flee player";
+        case COMBAT_FLEE_MONSTER:   return "DEF flee monster";
+        case COMBAT_FLEE_BOMB:      return "DEF flee bomb";
+        case COMBAT_DEFUSE:         return "DEF defuse";
+        case COMBAT_DEFEND:         return "DEF block";
+        case COMBAT_NUKE:           return "ATK nuke";
+        case COMBAT_SUPER_DRILL:    return "ACT super drill";
+        case COMBAT_RANGED:         return "ATK ranged";
+        case COMBAT_REMOTE:         return "ATK remote bomb";
+        default: return NULL;
+    }
+}
+
+static const char* cpu_goal_verb(GoalKind k, World* w, int gx, int gy, bool needs_bomb) {
+    if (needs_bomb) return "bombing wall";
+    if (k == GOAL_TREASURE) {
+        if (gx >= 0 && gy >= 0) {
+            uint8_t t = w->tiles[gy][gx];
+            if (t == TILE_WEAPONS_CRATE) return "walking to crate";
+            if (t == TILE_MEDIKIT) return "walking to medikit";
+            if (t == TILE_DIAMOND) return "walking to diamond";
+        }
+        return "walking to treasure";
+    }
+    if (k == GOAL_EXPLORE) return "exploring";
+    return "idle";
+}
+
+void cpu_debug_render(SDL_Renderer* renderer, App* app, World* world) {
+    if (!cpu_debug_on) return;
+    // Player slot colors: blue, red, green, yellow (matching the in-game HUD).
+    SDL_Color colors[4] = {
+        { 80, 160, 255, 255},  // p0 blue
+        {255,  80,  80, 255},  // p1 red
+        { 80, 255,  80, 255},  // p2 green
+        {255, 220,  80, 255},  // p3 yellow
+    };
+    SDL_BlendMode prev;
+    SDL_GetRenderDrawBlendMode(renderer, &prev);
+    SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+
+    for (int p = 0; p < world->num_players; p++) {
+        if (!is_cpu_player(app, p)) continue;
+        Actor* a = &world->actors[p];
+        if (a->is_dead) continue;
+        CpuState* st = &cpu_state[p];
+
+        SDL_Color c = colors[p % 4];
+        SDL_SetRenderDrawColor(renderer, c.r, c.g, c.b, 220);
+
+        int cx = a->pos.x;
+        int cy = a->pos.y;
+        int prev_x = cx;
+        int prev_y = cy;
+        for (int i = 0; i < st->path_len; i++) {
+            int sx = st->path_x[i] * 10 + 5;
+            int sy = st->path_y[i] * 10 + 30 + 5;
+            SDL_RenderDrawLine(renderer, prev_x, prev_y, sx, sy);
+            prev_x = sx; prev_y = sy;
+        }
+
+        // Goal marker
+        if (st->goal_kind != GOAL_NONE) {
+            SDL_Rect r = {st->goal_x * 10 + 2, st->goal_y * 10 + 30 + 2, 6, 6};
+            SDL_RenderDrawRect(renderer, &r);
+        }
+
+        // Verb label above the actor (combat state takes precedence)
+        const char* combat = cpu_combat_verb(st->combat);
+        const char* verb = combat ? combat
+            : cpu_goal_verb(st->goal_kind, world, st->goal_x, st->goal_y, st->needs_bomb);
+        int tx = cx - 20;
+        int ty = cy - 12;
+        if (tx < 0) tx = 0;
+        if (ty < 30) ty = 30;
+        render_text(renderer, &app->font, tx, ty, c, verb);
     }
 
-    // ===== 3. TREASURE: find and collect =====
-    {
-        AStarResult r = cpu_astar(world, cx, cy, goal_treasure, NULL, drill, has_bombs, search_limit, p);
-        if (r.dir) {
-            if (r.needs_bomb) {
-                int tx = cx, ty = cy;
-                for (int d = 0; d < 4; d++) if (DIR_FLAGS[d] == r.dir) { tx = cx+DDX[d]; ty = cy+DDY[d]; }
-                int bw = cpu_worth_bombing(world, tx, ty) ? cpu_pick_bomb_from(app, world, p, cx, cy, tx, ty) : -1;
-                if (bw >= 0 && safe_to_bomb) { uint8_t sw = cpu_select(app, actor, p, bw); return sw ? sw : cpu_place_bomb(p); }
-                // Bombing failed — don't walk into wall
-            } else {
-                for (int d = 0; d < 4; d++) if (DIR_FLAGS[d] == r.dir) cpu_last_dir[p] = d;
-                return r.dir;
-            }
-        }
-    }
-
-    // ===== 4. EXPLORE: visit unvisited areas =====
-    {
-        ExploreCtx ec = {p};
-        AStarResult r = cpu_astar(world, cx, cy, goal_explore, &ec, drill, has_bombs, search_limit, p);
-        if (r.dir) {
-            if (r.needs_bomb) {
-                int tx = cx, ty = cy;
-                for (int d = 0; d < 4; d++) if (DIR_FLAGS[d] == r.dir) { tx = cx+DDX[d]; ty = cy+DDY[d]; }
-                int bw = cpu_worth_bombing(world, tx, ty) ? cpu_pick_bomb_from(app, world, p, cx, cy, tx, ty) : -1;
-                if (bw >= 0 && safe_to_bomb) { uint8_t sw = cpu_select(app, actor, p, bw); return sw ? sw : cpu_place_bomb(p); }
-            } else {
-                for (int d = 0; d < 4; d++) if (DIR_FLAGS[d] == r.dir) cpu_last_dir[p] = d;
-                return r.dir;
-            }
-        }
-    }
-
-    // ===== 4b. PENALTY-FREE PATHFIND to treasure, enemies, or unexplored =====
-    {
-        AStarResult r = cpu_astar(world, cx, cy, goal_treasure, NULL, drill, has_bombs, ASTAR_MAX, -1);
-        if (r.dir) {
-            if (r.needs_bomb && safe_to_bomb) {
-                int tx = cx, ty = cy;
-                for (int d = 0; d < 4; d++) if (DIR_FLAGS[d] == r.dir) { tx = cx+DDX[d]; ty = cy+DDY[d]; }
-                int bw = cpu_worth_bombing(world, tx, ty) ? cpu_pick_bomb_from(app, world, p, cx, cy, tx, ty) : -1;
-                if (bw >= 0) { uint8_t sw = cpu_select(app, actor, p, bw); return sw ? sw : cpu_place_bomb(p); }
-            } else if (!r.needs_bomb) {
-                for (int d = 0; d < 4; d++) if (DIR_FLAGS[d] == r.dir) cpu_last_dir[p] = d;
-                return r.dir;
-            }
-        }
-        ExploreCtx ec = {p};
-        r = cpu_astar(world, cx, cy, goal_explore, &ec, drill, has_bombs, ASTAR_MAX, -1);
-        if (r.dir) {
-            if (r.needs_bomb && safe_to_bomb) {
-                int tx = cx, ty = cy;
-                for (int d = 0; d < 4; d++) if (DIR_FLAGS[d] == r.dir) { tx = cx+DDX[d]; ty = cy+DDY[d]; }
-                int bw = cpu_worth_bombing(world, tx, ty) ? cpu_pick_bomb_from(app, world, p, cx, cy, tx, ty) : -1;
-                if (bw >= 0) { uint8_t sw = cpu_select(app, actor, p, bw); return sw ? sw : cpu_place_bomb(p); }
-            } else if (!r.needs_bomb) {
-                for (int d = 0; d < 4; d++) if (DIR_FLAGS[d] == r.dir) cpu_last_dir[p] = d;
-                return r.dir;
-            }
-        }
-    }
-
-    // ===== 5. MOMENTUM: keep moving, try all options =====
-    // Helper: can we actually move into this tile in direction d?
-    // Excludes immovable pushables (boulder/bomb against wall)
-    #define CAN_ENTER(d, nx, ny) ({ \
-        bool _ok = false; \
-        uint8_t _t = world->tiles[ny][nx]; \
-        if (cpu_walkable(_t) || cpu_diggable(_t)) { \
-            _ok = true; \
-            /* Check: is it a pushable stuck against a wall? */ \
-            if (_t == TILE_BOULDER) { \
-                int _bx = (nx) + DDX[d], _by = (ny) + DDY[d]; \
-                if (_bx < 0 || _bx >= MAP_WIDTH || _by < 0 || _by >= MAP_HEIGHT \
-                    || !is_passable(world->tiles[_by][_bx])) _ok = false; \
-            } \
-        } \
-        _ok; })
-    {
-        int reverse = -1;
-        if (cpu_last_dir[p] >= 0) {
-            static const int rev[] = {1, 0, 3, 2};
-            reverse = rev[cpu_last_dir[p]];
-            // Try continuing forward
-            int fd = cpu_last_dir[p];
-            int nx = cx + DDX[fd], ny = cy + DDY[fd];
-            if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT && CAN_ENTER(fd, nx, ny))
-                return DIR_FLAGS[fd];
-        }
-        // Try all non-reverse directions: walk/dig, then bomb
-        int start = rand() % 4;
-        for (int pass = 0; pass < 2; pass++) {
-            for (int i = 0; i < 4; i++) {
-                int d = (start + i) % 4;
-                if (d == reverse) continue;
-                int nx = cx + DDX[d], ny = cy + DDY[d];
-                if (nx < 0 || nx >= MAP_WIDTH || ny < 0 || ny >= MAP_HEIGHT) continue;
-                if (pass == 0 && CAN_ENTER(d, nx, ny)) {
-                    cpu_last_dir[p] = d;
-                    return DIR_FLAGS[d];
-                }
-                if (pass == 1 && (cpu_bombable(world->tiles[ny][nx]) || world->tiles[ny][nx] == TILE_BOULDER)
-                    && has_bombs && safe_to_bomb) {
-                    int bw = cpu_worth_bombing(world, nx, ny) ? cpu_pick_bomb_from(app, world, p, cx, cy, nx, ny) : -1;
-                    if (bw >= 0) {
-                        cpu_last_dir[p] = d;
-                        uint8_t sw = cpu_select(app, actor, p, bw);
-                        return sw ? sw : cpu_place_bomb(p);
-                    }
-                }
-            }
-        }
-        // All non-reverse failed — try reverse (walk/dig/bomb)
-        if (reverse >= 0) {
-            int nx = cx + DDX[reverse], ny = cy + DDY[reverse];
-            if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT) {
-                if (CAN_ENTER(reverse, nx, ny)) { cpu_last_dir[p] = reverse; return DIR_FLAGS[reverse]; }
-                if ((cpu_bombable(world->tiles[ny][nx]) || world->tiles[ny][nx] == TILE_BOULDER)
-                    && has_bombs && safe_to_bomb) {
-                    int bw = cpu_worth_bombing(world, nx, ny) ? cpu_pick_bomb_from(app, world, p, cx, cy, nx, ny) : -1;
-                    if (bw >= 0) {
-                        cpu_last_dir[p] = reverse;
-                        uint8_t sw = cpu_select(app, actor, p, bw);
-                        return sw ? sw : cpu_place_bomb(p);
-                    }
-                }
-                cpu_last_dir[p] = reverse;
-                return DIR_FLAGS[reverse]; // last resort: try anyway
-            }
-        }
-        // Truly stuck — pick any traversable direction
-        for (int d = 0; d < 4; d++) {
-            int nx = cx + DDX[d], ny = cy + DDY[d];
-            if (nx >= 0 && nx < MAP_WIDTH && ny >= 0 && ny < MAP_HEIGHT
-                && (cpu_walkable(world->tiles[ny][nx]) || cpu_diggable(world->tiles[ny][nx]))) {
-                cpu_last_dir[p] = d;
-                return DIR_FLAGS[d];
-            }
-        }
-    }
-    #undef CAN_ENTER
-
-    // Absolute last resort: cycle weapons or stop
-    return has_bombs ? NET_INPUT_CYCLE : NET_INPUT_STOP;
+    SDL_SetRenderDrawBlendMode(renderer, prev);
 }

@@ -40,6 +40,7 @@ void context_destroy(ApplicationContext* ctx);
 void context_wait_frame(ApplicationContext* ctx);
 bool context_poll_events(ApplicationContext* ctx);
 bool context_load_spy(ApplicationContext* ctx, const char* filename, TexturePalette* out_palette);
+bool context_load_spy_keyed(ApplicationContext* ctx, const char* filename, TexturePalette* out_palette);
 bool context_load_ppm(ApplicationContext* ctx, const char* filename, TexturePalette* out_palette);
 
 // Animation and rendering

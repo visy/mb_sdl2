@@ -7,6 +7,7 @@
 #include "campaign.h"
 #include "menus.h"
 #include "netgame.h"
+#include "cpu.h"
 #include "compat.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -181,7 +182,7 @@ bool app_init(App* app, ApplicationContext* ctx) {
 
     if (!context_load_spy(ctx, "TITLEBE.SPY", &app->title)) return false;
     if (!context_load_spy(ctx, "MAIN3.SPY", &app->main_menu)) return false;
-    if (!context_load_spy(ctx, "SIKA.SPY", &app->sika)) return false;
+    if (!context_load_spy_keyed(ctx, "SIKA.SPY", &app->sika)) return false;
     if (!context_load_spy(ctx, "SHOPPIC.SPY", &app->shop)) return false;
     if (!context_load_spy(ctx, "PLAYERS.SPY", &app->players)) return false;
 
@@ -394,6 +395,7 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
                 else if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F1) { entering_debug = true; debug_func = app_run_netgame; navigating = false; }
 #endif
                 else if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F2) { entering_debug = true; debug_func = app_run_editor; navigating = false; }
+                else if (e.type == SDL_KEYDOWN && e.key.keysym.scancode == SDL_SCANCODE_F5) { selected = MENU_NEW_GAME; navigating = false; app->cpu_test_mode = true; }
                 else if (e.type == SDL_CONTROLLERBUTTONDOWN && e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) { entering_debug = true; debug_func = app_run_editor; navigating = false; }
             }
             SDL_Delay(1);
@@ -402,7 +404,22 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
         context_animate(ctx, ANIMATION_FADE_DOWN, 7);
         if (selected == MENU_QUIT) break;
         else if (selected == MENU_NEW_GAME) {
-            if (!app_run_player_select(app, ctx)) continue;
+            if (app->cpu_test_mode) {
+                // F5 quick CPU test: 4 CPU players, ANZULABY x5 rounds, defaults otherwise
+                app->options.players = 4;
+                app->options.rounds = 5;
+                app->options.speed = 100;
+                int anzu = -1;
+                for (int i = 0; i < app->level_count; i++)
+                    if (STRNICMP(app->level_names[i], "ANZULABY", 8) == 0) { anzu = i; break; }
+                app->selected_level_count = 5;
+                for (int i = 0; i < 5; i++) app->selected_levels[i] = (anzu >= 0 ? anzu : 0) + 1;
+                for (int p = 0; p < 4; p++) {
+                    app->roster.identities[p] = ROSTER_CPU;
+                    cpu_assign(p, app->player_name[p], sizeof(app->player_name[p]));
+                }
+                cpu_debug_set(true);
+            } else if (!app_run_player_select(app, ctx)) continue;
             if (app->options.players == 1) {
                 app_run_campaign(app, ctx);
             } else {
@@ -444,6 +461,11 @@ void app_run_main_menu(App* app, ApplicationContext* ctx, bool campaign_mode) {
                 }
                 roster_save(&app->roster, ctx->game_dir);
                 if (auto_levels) app->selected_level_count = 0;
+                if (app->cpu_test_mode) {
+                    app->selected_level_count = 0;
+                    app->cpu_test_mode = false;
+                    cpu_debug_set(false);
+                }
             }
         }
         else if (selected == MENU_OPTIONS) app_run_options(app, ctx);
