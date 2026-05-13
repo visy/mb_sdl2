@@ -13,9 +13,13 @@
   const isLocal = host === 'localhost' || host === '127.0.0.1' ||
                   /^192\.168\./.test(host) || /^10\./.test(host) ||
                   /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+  // Prod: nginx reverse-proxies <ws|wss>://quad.fi/mb/ws -> localhost:7000.
+  // Match scheme to page protocol -- mixing https page + ws:// triggers
+  // mixed-content blocks; http page + wss:// works but unnecessary.
+  const wsScheme = location.protocol === 'https:' ? 'wss' : 'ws';
   const SIGNAL_URL = isLocal
     ? `ws://${host === 'localhost' ? 'localhost' : host}:7000`
-    : 'wss://signal.quad.fi/ws';
+    : `${wsScheme}://${host}/mb/ws`;
 
   // RTC config: STUN public, TURN should be added when coturn deployed on quad.fi.
   const RTC_CONFIG = {
@@ -55,18 +59,17 @@
   }
 
   async function onSignal(msg) {
-    // msg shapes: {type:'joined', slot, peers}, {type:'peer-join', slot},
-    // {type:'offer', from, sdp}, {type:'answer', from, sdp}, {type:'ice', from, cand}
+    console.log('[net] signal in', msg.type, msg);
     switch (msg.type) {
       case 'joined':
         localSlot = msg.slot;
         setStatus(`joined room ${roomId} as slot ${localSlot}`);
         if (isHost) {
-          // Host creates offers to each existing/future client.
-          for (const slot of msg.peers) await openOfferTo(slot);
+          for (const slot of (msg.peers || [])) await openOfferTo(slot);
         }
         break;
       case 'peer-join':
+        console.log('[net] peer-join slot=', msg.slot, 'isHost=', isHost);
         if (isHost) await openOfferTo(msg.slot);
         break;
       case 'offer': {
@@ -93,16 +96,17 @@
   function ensurePeer(slot, createDc) {
     if (peers[slot]) return peers[slot].pc;
     const pc = new RTCPeerConnection(RTC_CONFIG);
+    // Initialize entry FIRST so attachDc (called via ondatachannel OR below)
+    // can safely write peers[slot].dc.
+    peers[slot] = { pc, dc: null };
     pc.onicecandidate = (e) => {
       if (e.candidate) ws.send(JSON.stringify({ type: 'ice', to: slot, cand: e.candidate }));
     };
     pc.ondatachannel = (e) => attachDc(slot, e.channel);
-    let dc = null;
     if (createDc) {
-      dc = pc.createDataChannel('mb', { ordered: true });
+      const dc = pc.createDataChannel('mb', { ordered: true });
       attachDc(slot, dc);
     }
-    peers[slot] = { pc, dc };
     return pc;
   }
 
@@ -117,10 +121,17 @@
   }
 
   async function openOfferTo(slot) {
-    const pc = ensurePeer(slot, /*createDc*/ true);
-    const off = await pc.createOffer();
-    await pc.setLocalDescription(off);
-    ws.send(JSON.stringify({ type: 'offer', to: slot, sdp: off.sdp }));
+    console.log('[net] openOfferTo slot=', slot);
+    try {
+      const pc = ensurePeer(slot, /*createDc*/ true);
+      const off = await pc.createOffer();
+      await pc.setLocalDescription(off);
+      ws.send(JSON.stringify({ type: 'offer', to: slot, sdp: off.sdp }));
+      console.log('[net] offer sent to slot=', slot);
+    } catch (e) {
+      console.error('[net] openOfferTo failed:', e);
+      setStatus('offer failed: ' + e.message);
+    }
   }
 
   // ---- API exposed to WASM (net_web.c calls these via EM_JS) ----
@@ -135,14 +146,15 @@
       await wsOpen();
       ws.send(JSON.stringify({ type: 'join', room }));
     },
-    // Returns 0 if no data, else slot index; writes bytes into HEAPU8 at ptr.
-    // Caller passes buffer + max len; we drain one packet at a time.
+    // IMPORTANT: always read Module.HEAPU8 fresh -- with ALLOW_MEMORY_GROWTH,
+    // WASM linear memory is reallocated; prior HEAPU8 references become
+    // detached. Module.HEAPU8 is refreshed by emscripten on every grow.
     poll(ptr, maxLen) {
       for (let s = 0; s < inbox.length; s++) {
         if (inbox[s].length === 0) continue;
         const pkt = inbox[s].shift();
         if (pkt.length > maxLen) return -1;
-        HEAPU8.set(pkt, ptr);
+        Module.HEAPU8.set(pkt, ptr);
         return (s << 16) | pkt.length;
       }
       return 0;
@@ -150,15 +162,17 @@
     sendTo(slot, ptr, len) {
       const dc = peers[slot]?.dc;
       if (!dc || dc.readyState !== 'open') return 0;
-      dc.send(HEAPU8.subarray(ptr, ptr + len));
+      // Slice to copy out of WASM memory -- DataChannel.send retains the buffer
+      // asynchronously, and the underlying memory may grow/detach before send.
+      dc.send(Module.HEAPU8.slice(ptr, ptr + len));
       return 1;
     },
     broadcast(ptr, len) {
-      const view = HEAPU8.subarray(ptr, ptr + len);
+      const copy = Module.HEAPU8.slice(ptr, ptr + len);
       let n = 0;
       for (let s = 0; s < peers.length; s++) {
         const dc = peers[s]?.dc;
-        if (dc && dc.readyState === 'open') { dc.send(view); n++; }
+        if (dc && dc.readyState === 'open') { dc.send(copy); n++; }
       }
       return n;
     },

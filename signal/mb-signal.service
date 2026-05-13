@@ -1,0 +1,22 @@
+[Unit]
+Description=Mine Bombers WebRTC signaling server
+After=network.target
+
+[Service]
+Type=simple
+User=mbsignal
+Group=mbsignal
+WorkingDirectory=/opt/mb-signal
+Environment=PORT=7000
+ExecStart=/opt/mb-signal/mb-signal
+Restart=on-failure
+RestartSec=2
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+# Static binary needs no write access.
+
+[Install]
+WantedBy=multi-user.target

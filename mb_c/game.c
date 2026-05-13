@@ -2238,10 +2238,13 @@ RoundResult game_run(App* app, ApplicationContext* ctx, uint8_t* level_data, Net
                     }
                 }
 
-                // Animation update
-                actor->animation %= 30;
+                // Animation update. Keep animation in [0..29] so the render-
+                // time `phase_map[animation / 5]` (phase_map has 6 entries)
+                // stays in bounds. The previous order (mod then ++) briefly
+                // exposed animation=30 to the renderer, indexing phase_map[6].
                 if (actor->is_digging && actor->animation == 16) context_play_sample_freq(app->sound_picaxe, 11000 + (game_rand() % 100));
                 actor->animation++;
+                if (actor->animation >= 30) actor->animation = 0;
             } else { actor->animation = 0; }
           }
         }

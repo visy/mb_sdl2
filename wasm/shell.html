@@ -4,9 +4,23 @@
 <meta charset="utf-8">
 <title>Mine Bombers</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #000; color: #ccc; font-family: monospace; height: 100%; }
-  #wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; }
-  canvas { background: #000; display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
+  html, body { margin: 0; padding: 0; background: #000; color: #ccc; font-family: monospace; height: 100%; overflow: hidden; }
+  /* Leave a small top gap so OS / browser UI doesn't clip the top of the
+     playfield. Available height = viewport minus this padding. */
+  :root { --top-pad: 5px; }
+  #wrap { display: flex; flex-direction: column; align-items: center; justify-content: flex-start;
+          height: 100vh; width: 100vw; padding-top: var(--top-pad); box-sizing: border-box; }
+  /* Canvas internal resolution is set by SDL (640x480). CSS scales it to
+     fit the viewport while preserving 4:3 aspect ratio. Pixelated rendering
+     keeps pixels crisp instead of bilinear-blurred. */
+  canvas {
+    background: #000;
+    display: block;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    width: min(100vw, calc((100vh - var(--top-pad)) * 4 / 3));
+    height: min(calc(100vh - var(--top-pad)), calc(100vw * 3 / 4));
+  }
   #status { padding: 8px; font-size: 12px; }
   #netlobby { display: none; padding: 12px; background: #111; border: 1px solid #333; margin-top: 8px; }
   #netlobby input, #netlobby button { margin: 2px; }

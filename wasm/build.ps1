@@ -35,8 +35,13 @@ New-Item -ItemType Directory -Force -Path $buildDir | Out-Null
 if (Test-Path $dataDir) { Remove-Item -Recurse -Force $dataDir }
 New-Item -ItemType Directory -Force -Path $dataDir | Out-Null
 $assetExt = '.SPY','.MNL','.MNE','.VOC','.S3M','.CBM','.PPM','.FON','.DAT','.CFG','.TXT','.DIZ','.RAW'
-Get-ChildItem -Path $origDir -File | Where-Object { $assetExt -contains $_.Extension.ToUpper() } |
-    ForEach-Object { Copy-Item $_.FullName (Join-Path $dataDir $_.Name) }
+# Skip user-state files so each fresh page load starts with empty roster +
+# default options. IDENTIFY.DAT is also user state but the game tolerates
+# its absence. INPUT.CFG must stay (game refuses to start without it).
+$skipFiles = 'PLAYERS.DAT','OPTIONS.CFG','HIGHSCOR.DAT','IDENTIFY.DAT'
+Get-ChildItem -Path $origDir -File | Where-Object {
+    $assetExt -contains $_.Extension.ToUpper() -and $skipFiles -notcontains $_.Name.ToUpper()
+} | ForEach-Object { Copy-Item $_.FullName (Join-Path $dataDir $_.Name) }
 $staged = (Get-ChildItem $dataDir -File).Count
 Write-Host "staged $staged data files from $origDir -> $dataDir"
 
@@ -62,9 +67,10 @@ $cflags = @(
 # lets SDL_Delay yield to browser without refactoring all of them to callbacks.
 $ldflags = @(
     '-sUSE_SDL=2','-sUSE_SDL_MIXER=2','-sSDL2_MIXER_FORMATS=["wav"]',
-    '-sASYNCIFY','-sASYNCIFY_STACK_SIZE=65536',
+    '-sASYNCIFY','-sASYNCIFY_STACK_SIZE=1048576',
+    '-sSTACK_SIZE=1048576',
     '-sALLOW_MEMORY_GROWTH=1','-sINITIAL_MEMORY=64MB',
-    '-sEXPORTED_RUNTIME_METHODS=["ccall","cwrap","FS","IDBFS"]',
+    '-sEXPORTED_RUNTIME_METHODS=["ccall","cwrap","FS","IDBFS","HEAPU8"]',
     '-sEXPORTED_FUNCTIONS=["_main","_malloc","_free"]',
     '-lidbfs.js',
     "--preload-file","$dataDir@/",

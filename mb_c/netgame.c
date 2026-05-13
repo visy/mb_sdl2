@@ -319,14 +319,20 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
     }
 
     // Phase B: Connect
+    char display_room[64] = "";   // shown in lobby header (web only)
     if (choice == 0) {
         // Host
         char host_room[64] = "";
 #ifdef MB_WEB
         // Web build: ask for room name first (signaling server uses it to
         // match host with clients). Native (ENet) doesn't need this.
+        // Default to mbXXX with three random digits so each host gets a
+        // distinct room out of the box -- avoids collisions when several
+        // sessions run at once with default name.
+        char default_room[16];
+        snprintf(default_room, sizeof(default_room), "mb%03d", (int)(SDL_GetTicks() % 1000));
         if (!text_entry_dialog(app, ctx, host_room, sizeof(host_room),
-                               "NETGAME - ENTER ROOM NAME:", "mb-room", 0)) {
+                               "NETGAME - ENTER ROOM NAME:", default_room, 0)) {
             net_shutdown();
             return;
         }
@@ -335,6 +341,9 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
             net_shutdown();
             return;
         }
+#ifdef MB_WEB
+        snprintf(display_room, sizeof(display_room), "%s", host_room);
+#endif
         // Pack host options into server info for joining clients
         net->host_info.cash = app->options.cash;
         net->host_info.treasures = app->options.treasures;
@@ -393,6 +402,9 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
                 }
                 SDL_StopTextInput();
                 entering = false;
+#ifdef MB_WEB
+                snprintf(display_room, sizeof(display_room), "%s", hostname);
+#endif
                 break;
             }
 
@@ -457,8 +469,14 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
         char info[128];
         snprintf(info, sizeof(info), "CASH:%u ROUNDS:%u SPEED:%u", app->options.cash, app->options.rounds, app->options.speed);
         render_text(ctx->renderer, &app->font, 160, 30, gray, info);
+#ifdef MB_WEB
+        // Web build: show room name (port is meaningless in WebRTC).
+        snprintf(info, sizeof(info), "ROOM: %s", display_room);
+        render_text(ctx->renderer, &app->font, 220, 44, gray, info);
+#else
         snprintf(info, sizeof(info), "PORT:%d", NET_PORT);
         render_text(ctx->renderer, &app->font, 250, 44, gray, info);
+#endif
 
         // Player avatars and names
         for (int i = 0; i < NET_MAX_PLAYERS; i++) {

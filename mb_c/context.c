@@ -92,7 +92,12 @@ void context_init(ApplicationContext* ctx, const char* game_dir, bool windowed) 
     }
     if (!ctx->window) report_sdl_error("Failed to create window");
 
-    ctx->renderer = SDL_CreateRenderer(ctx->window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE);
+    ctx->renderer = SDL_CreateRenderer(ctx->window, -1,
+        SDL_RENDERER_ACCELERATED | SDL_RENDERER_TARGETTEXTURE
+#ifdef __EMSCRIPTEN__
+        | SDL_RENDERER_PRESENTVSYNC
+#endif
+    );
     if (!ctx->renderer) report_sdl_error("Failed to create renderer");
 
     g_ctx_for_filter = ctx;
