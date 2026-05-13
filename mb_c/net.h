@@ -17,7 +17,15 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+
+#ifdef MB_WEB
+// Browser build: WebRTC DataChannel replaces ENet. We keep the same field
+// names (ENetHost*, ENetPeer*) in NetContext so netgame.c needs no changes.
+typedef struct NetWebPeer ENetPeer;
+typedef struct NetWebHost ENetHost;
+#else
 #include <enet/enet.h>
+#endif
 
 #define NET_PORT 7777
 #define NET_MAX_PEERS 3
@@ -177,8 +185,10 @@ typedef struct {
 bool net_init(void);
 void net_shutdown(void);
 
-bool net_host_create(NetContext* ctx, int port);
-bool net_client_connect(NetContext* ctx, const char* hostname, int port);
+// room_name is used on MB_WEB (WebRTC) to identify the room on the signaling
+// server. Native (ENet) ignores it and uses port only.
+bool net_host_create(NetContext* ctx, int port, const char* room_name);
+bool net_client_connect(NetContext* ctx, const char* hostname, int port, const char* room_name);
 void net_disconnect(NetContext* ctx);
 
 // Returns number of events processed

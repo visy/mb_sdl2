@@ -16,7 +16,8 @@ void net_shutdown(void) {
     enet_deinitialize();
 }
 
-bool net_host_create(NetContext* ctx, int port) {
+bool net_host_create(NetContext* ctx, int port, const char* room_name) {
+    (void)room_name;
     memset(ctx, 0, sizeof(NetContext));
     ctx->is_server = true;
     ctx->local_player = 0;
@@ -35,7 +36,8 @@ bool net_host_create(NetContext* ctx, int port) {
     return true;
 }
 
-bool net_client_connect(NetContext* ctx, const char* hostname, int port) {
+bool net_client_connect(NetContext* ctx, const char* hostname, int port, const char* room_name) {
+    (void)room_name;
     memset(ctx, 0, sizeof(NetContext));
     ctx->is_server = false;
 

@@ -321,7 +321,17 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
     // Phase B: Connect
     if (choice == 0) {
         // Host
-        if (!net_host_create(net, NET_PORT)) {
+        char host_room[64] = "";
+#ifdef MB_WEB
+        // Web build: ask for room name first (signaling server uses it to
+        // match host with clients). Native (ENet) doesn't need this.
+        if (!text_entry_dialog(app, ctx, host_room, sizeof(host_room),
+                               "NETGAME - ENTER ROOM NAME:", "mb-room", 0)) {
+            net_shutdown();
+            return;
+        }
+#endif
+        if (!net_host_create(net, NET_PORT, host_room)) {
             net_shutdown();
             return;
         }
@@ -336,7 +346,14 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
                              | (app->options.selling ? 4 : 0) | (app->options.win_by_money ? 8 : 0);
         snprintf(net->player_names[0], NET_PLAYER_NAME_LEN, "%s", net_name);
     } else {
-        // Join - hostname entry
+        // Join - hostname entry on native; room name entry on web.
+#ifdef MB_WEB
+        const char* prompt_label = "ENTER ROOM NAME:";
+        const char* hint_line    = "TYPE NAME  CTRL+V PASTE  ENTER JOIN  ESC BACK";
+#else
+        const char* prompt_label = "ENTER HOST ADDRESS:";
+        const char* hint_line    = "TYPE ADDRESS  CTRL+V PASTE  ENTER CONNECT  ESC BACK";
+#endif
         char hostname[128] = "";
         int cursor = 0;
         bool entering = true;
@@ -347,16 +364,21 @@ void app_run_netgame(App* app, ApplicationContext* ctx) {
             SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
             SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);
             SDL_RenderClear(ctx->renderer);
-            render_text(ctx->renderer, &app->font, 200, 100, white, "ENTER HOST ADDRESS:");
+            render_text(ctx->renderer, &app->font, 200, 100, white, prompt_label);
             char display[140];
             snprintf(display, sizeof(display), "%s_", hostname);
             render_text(ctx->renderer, &app->font, 200, 130, yellow, connecting ? "CONNECTING..." : display);
-            render_text(ctx->renderer, &app->font, 120, 200, gray, "TYPE ADDRESS  CTRL+V PASTE  ENTER CONNECT  ESC BACK");
+            render_text(ctx->renderer, &app->font, 120, 200, gray, hint_line);
             SDL_SetRenderTarget(ctx->renderer, NULL);
             context_present(ctx);
 
             if (connecting) {
-                if (!net_client_connect(net, hostname, NET_PORT)) {
+#ifdef MB_WEB
+                // On web, hostname IS the room name; no separate IP.
+                if (!net_client_connect(net, "", NET_PORT, hostname)) {
+#else
+                if (!net_client_connect(net, hostname, NET_PORT, NULL)) {
+#endif
                     // Show failure briefly
                     SDL_SetRenderTarget(ctx->renderer, ctx->buffer);
                     SDL_SetRenderDrawColor(ctx->renderer, 0, 0, 0, 255);

@@ -315,7 +315,13 @@ bool context_play_music(ApplicationContext* ctx, const char* filename) {
 bool context_play_music_at(ApplicationContext* ctx, const char* filename, int order_idx) {
     if (!ctx->music) {
         ctx->music = (s3m_t*)malloc(sizeof(s3m_t));
-        s3m_initialize(ctx->music, 44100);
+        // Use actual mixer rate, not assumed 44100. Browser AudioContext often
+        // runs at 48000 -- if we feed s3m samples at the wrong rate, music
+        // plays sped up / pitched high.
+        int mix_freq = 44100, mix_channels = 0;
+        Uint16 mix_format = 0;
+        Mix_QuerySpec(&mix_freq, &mix_format, &mix_channels);
+        s3m_initialize(ctx->music, mix_freq);
     }
     
     Mix_HookMusic(NULL, NULL);

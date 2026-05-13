@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Mine Bombers</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; color: #ccc; font-family: monospace; height: 100%; }
+  #wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; }
+  canvas { background: #000; display: block; image-rendering: pixelated; image-rendering: crisp-edges; }
+  #status { padding: 8px; font-size: 12px; }
+  #netlobby { display: none; padding: 12px; background: #111; border: 1px solid #333; margin-top: 8px; }
+  #netlobby input, #netlobby button { margin: 2px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+  <div id="status">loading...</div>
+  <div id="netlobby">
+    <div>Room: <input id="room" value="lobby1"> <button id="host">Host</button> <button id="join">Join</button></div>
+    <div id="netstatus"></div>
+  </div>
+</div>
+
+<script>
+  // Emscripten Module object — wired up before mb.js runs.
+  var Module = {
+    arguments: ['/', '-w'],
+    canvas: (function(){ var c = document.getElementById('canvas'); c.addEventListener('webglcontextlost', e => { alert('WebGL lost'); e.preventDefault(); }); return c; })(),
+    print:    (...a) => { console.log(...a); },
+    printErr: (...a) => { console.warn(...a); },
+    setStatus: (t) => { document.getElementById('status').textContent = t; },
+  };
+</script>
+<script src="netplay.js"></script>
+{{{ SCRIPT }}}
+</body>
+</html>
